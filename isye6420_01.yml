@@ -1,0 +1,17 @@
+channels:
+- conda-forge
+- defaults
+dependencies:
+- python=3.12.12
+- ipykernel
+- jupyter
+- nbconvert
+- matplotlib=3.10.0
+- numpy=2.0.2
+- pandas=2.2.2
+- scikit-learn=1.6.1
+- scipy=1.16.3
+- seaborn=0.13.2
+- statsmodels=0.14.6
+- sympy=1.14.0
+name: isye6420_01
