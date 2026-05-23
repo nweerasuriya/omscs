@@ -1,7 +1,7 @@
 # This tells pip to install a cpu only version of pytorch for linux (Ubuntu 22.04)
 #    please consult https://pytorch.org/get-started/locally/ for specifics urls for Windows and MacOS
 
---extra-index-url https://download.pytorch.org/whl/cpu
+#--extra-index-url https://download.pytorch.org/whl/cpu
 
 # keep in mind that Gradescope/Autograder is a headless server with no GPU
 #   so it is recomended that you use the  same setup locally.
