@@ -190,7 +190,8 @@ def build_clan_table(mean_rd_treated, X_full, T_arr,
                      top_pct=0.10,
                      binary_cols=None,
                      continuous_cols=None,
-                     display_labels=None):
+                     display_labels=None,
+                     smd_threshold=0.10):
     """
     Compares the top `top_pct` maximum-benefit treated patients against the
     remaining treated patients on baseline covariates.
@@ -258,44 +259,51 @@ def build_clan_table(mean_rd_treated, X_full, T_arr,
             "t2dm_flag", "sex_Female",
             "atopic_disease_flag", "eosinophilic_disease_flag",
         ] if c in X_treated.columns]
- 
+
     rows = []
- 
-    # ── Continuous variables ──────────────────────────────────────────────
+
     for col in continuous_cols:
         hb_vals   = X_hb[col].dropna()
         rest_vals = X_rest[col].dropna()
         abs_diff  = abs(hb_vals.mean() - rest_vals.mean())
+        pooled_sd = np.sqrt((hb_vals.std()**2 + rest_vals.std()**2) / 2)
+        smd       = abs_diff / pooled_sd if pooled_sd > 0 else 0.0
         label     = display_labels.get(col, col)
         rows.append({
-            "Variable"          : label,
-            "Type"              : "continuous",
-            col_hb              : f"{hb_vals.mean():.2f} \u00b1 {hb_vals.std():.2f}",
-            col_rest            : f"{rest_vals.mean():.2f} \u00b1 {rest_vals.std():.2f}",
+            "Variable"           : label,
+            "Type"               : "continuous",
+            col_hb               : f"{hb_vals.mean():.2f} \u00b1 {hb_vals.std():.2f}",
+            col_rest             : f"{rest_vals.mean():.2f} \u00b1 {rest_vals.std():.2f}",
             "Absolute Difference": f"{abs_diff:.2f}",
-            "_abs_diff_raw"     : abs_diff,
+            "SMD"                : f"{smd:.2f}",
+            "_smd_raw"           : smd,
         })
- 
-    # ── Binary variables ──────────────────────────────────────────────────
+
     for col in binary_cols:
         hb_prop   = X_hb[col].mean()
         rest_prop = X_rest[col].mean()
         abs_diff  = abs(hb_prop - rest_prop)
+        pooled_sd = np.sqrt(
+            (hb_prop * (1 - hb_prop) + rest_prop * (1 - rest_prop)) / 2
+        )
+        smd       = abs_diff / pooled_sd if pooled_sd > 0 else 0.0
         label     = display_labels.get(col, col)
         rows.append({
-            "Variable"          : label,
-            "Type"              : "binary",
-            col_hb              : f"{hb_prop * 100:.1f}%",
-            col_rest            : f"{rest_prop * 100:.1f}%",
+            "Variable"           : label,
+            "Type"               : "binary",
+            col_hb               : f"{hb_prop * 100:.1f}%",
+            col_rest             : f"{rest_prop * 100:.1f}%",
             "Absolute Difference": f"{abs_diff:.2f}",
-            "_abs_diff_raw"     : abs_diff,
+            "SMD"                : f"{smd:.2f}",
+            "_smd_raw"           : smd,
         })
- 
+
     clan_df = (pd.DataFrame(rows)
-               .sort_values("_abs_diff_raw", ascending=False)
-               .drop(columns="_abs_diff_raw")
+               .sort_values("_smd_raw", ascending=False)
+               .query("_smd_raw > @smd_threshold")   # apply threshold
+               .drop(columns="_smd_raw")
                .reset_index(drop=True))
- 
+
     return clan_df
  
  
@@ -355,18 +363,21 @@ def print_clan_table(clan_df, top_pct=0.10):
     """Plain-text fallback for non-Jupyter environments."""
     pct_label = f"Top {int(top_pct * 100)}%"
     hdr = clan_df.columns.tolist()
-    w = [36, 12, 26, 26, 20]
+    w = [36, 12, 26, 26, 20, 20]  # column widths for formatting
     sep = "─" * sum(w)
     print(f"\n{sep}")
     print(f"  CLAN Table — {pct_label} Maximum-Benefit Subgroup (D1) vs Rest of Treated")
     print(sep)
     print(f"{'Variable':<{w[0]}} {'Type':<{w[1]}} {hdr[2]:<{w[2]}} "
-          f"{hdr[3]:<{w[3]}} {'Absolute Difference':>{w[4]}}")
+          f"{hdr[3]:<{w[3]}} {'Absolute Difference':>{w[4]}} {'SMD':>{w[5]}}")
     print(sep)
     for _, row in clan_df.iterrows():
         print(f"{row['Variable']:<{w[0]}} {row['Type']:<{w[1]}} "
               f"{row[hdr[2]]:<{w[2]}} {row[hdr[3]]:<{w[3]}} "
-              f"{row['Absolute Difference']:>{w[4]}}")
+              f"{row['Absolute Difference']:>{w[4]}} "
+              f"{row['SMD']:>{w[5]}}")
+              
+        
     print(sep + "\n")
  
 
