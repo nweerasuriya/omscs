@@ -191,7 +191,7 @@ def build_clan_table(mean_rd_treated, X_full, T_arr,
                      binary_cols=None,
                      continuous_cols=None,
                      display_labels=None,
-                     smd_threshold=0.10):
+                     smd_threshold=0.10,):
     """
     Compares the top `top_pct` maximum-benefit treated patients against the
     remaining treated patients on baseline covariates.
