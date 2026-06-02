@@ -53,6 +53,43 @@ def build_ite_rd(trace, X_mu_arr, X_tau_arr, T_arr, constant_intercept):
 
     return ite_rd, rd_treated, mean_rd_t, treated_mask
 
+def build_ite_rd_inplace(trace, X_mu_arr, X_tau_arr, T_arr, constant_intercept, chunk_size=500):
+    """
+    Returns the full arrays but uses float32 and chunked execution 
+    to prevent memory spikes during calculation.
+    """
+    N = X_mu_arr.shape[0]
+    mu_s  = trace.posterior["mu"].values.reshape(-1, N)   
+    tau_s = trace.posterior["tau"].values.reshape(-1, N)  
+    D = mu_s.shape[0]
+
+    treated_mask = T_arr.astype(bool)
+    n_treated = np.sum(treated_mask)
+
+    # Pre-allocate output arrays using float32 (saves 50% RAM)
+    ite_rd = np.empty((D, N), dtype=np.float32)
+    rd_treated = np.empty((D, n_treated), dtype=np.float32)
+
+    for i in range(0, D, chunk_size):
+        end = min(i + chunk_size, D)
+        
+        # Cast chunks to float32 dynamically
+        mu_chunk = mu_s[i:end].astype(np.float32)
+        tau_chunk = tau_s[i:end].astype(np.float32)
+        
+        eta_0 = mu_chunk + constant_intercept
+        eta_1 = mu_chunk + tau_chunk + constant_intercept
+        
+        # Compute and assign directly to pre-allocated blocks
+        chunk_rd = (ndtr(eta_1) - ndtr(eta_0)).astype(np.float32)
+        
+        ite_rd[i:end] = chunk_rd
+        rd_treated[i:end] = chunk_rd[:, treated_mask]
+
+    mean_rd_t = rd_treated.mean(axis=0)
+
+    return ite_rd, rd_treated, mean_rd_t, treated_mask
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # A. GATES — Group Average Treatment Effects on the RD scale
