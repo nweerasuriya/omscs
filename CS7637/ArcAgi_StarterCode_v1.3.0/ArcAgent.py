@@ -1,59 +1,11 @@
 import numpy as np
+from skimage.measure import label, regionprops
 
 from ArcProblem import ArcProblem
 from ArcData import ArcData
 from ArcSet import ArcSet
-
-
-class ArcObject:
-    """
-    Single object in a dataset
-    """
-
-    def __init__(self, cell_pos=None, color=None):
-        # Assume single shape has a single colour for now
-        self.cell_pos = cell_pos
-        self.color = color
-
-        self.num_cells = len(cell_pos) if cell_pos is not None else 0
-
-    def bounding_box(self):
-        """
-        Get the bounding box of the object.
-        """
-        rows = [pos[0] for pos in self.cell_pos]
-        cols = [pos[1] for pos in self.cell_pos]
-        return (min(rows), max(rows), min(cols), max(cols))
-
-    def shape(self):
-        """
-        Get the shape of the object as a tuple (num_rows, num_cols).
-        """
-        bounding_box = self.bounding_box()
-        return (
-            bounding_box[1] - bounding_box[0] + 1,
-            bounding_box[3] - bounding_box[2] + 1,
-        )
-
-    def relative_position(self, other):
-        """
-        Get position of object within new grid the size of the bounding box of the object.
-        """
-        bounding_box = self.bounding_box()
-        relative_pos = set()
-        for pos in self.cell_pos:
-            relative_pos.add((pos[0] - bounding_box[0], pos[1] - bounding_box[2]))
-        return relative_pos
-
-    def isolated_object(self) -> ArcData:
-        """
-        Get the object in a new grid that has the size of the bounding box of the object.
-        """
-        bounding_box = self.bounding_box()
-        output = np.zeros(self.shape(), dtype=int)
-        for pos in self.cell_pos:
-            output[pos[0] - bounding_box[0], pos[1] - bounding_box[2]] = self.color
-        return ArcData(output)
+from ArcObject import ArcObject
+from ArcTransformation import ArcTransformation
 
 
 class ArcAgent:
@@ -66,6 +18,10 @@ class ArcAgent:
         self.grid_size_matches = True
         self.all_input_kept = True
         self.num_cells_changed = None
+        self.similar_objects = {}
+
+        # Testing variables
+        self.test_passed = False
 
     # --------------------------------------------------------------------------
     # Initial Checks (Level 0)
@@ -119,14 +75,59 @@ class ArcAgent:
         if len(set(train_list)) == 1:
             self.num_cells_changed = train_list[0]
 
+    # %% --------------------------------------------------------------------------
+    # Object Identification and Comparison (Level 1)
+    # -----------------------------------------------------------------------------
     def _identify_objects(self, grid) -> list[ArcObject]:
+        """
+        Identify objects in a grid and return a list of ArcObjects.
+        Use scikit-image's label to identify connected components using 2x2 connectivity
+        (cells that touching diagonally are considered connected).
+        For each connected component of the same colour, create an ArcObject
+        """
         objects = []
         for color in np.unique(grid):
             if color == 0:
                 continue
-            cell_pos = set(zip(*np.where(grid == color)))
-            objects.append(ArcObject(cell_pos=cell_pos, color=color))
+            # Require mask for label function, for each colour
+            mask = grid == color
+            labeled_mask = label(mask, connectivity=2)
+            # Get properties of labeled region
+            for props in regionprops(labeled_mask):
+                cell_pos = props.coords
+                objects.append(
+                    ArcObject(color=color, cell_pos=cell_pos, general_props=props)
+                )
         return objects
+
+    def check_similar_objects(self, training_data: list[ArcSet]) -> list[dict]:
+        """
+        Check in the training data, if there are objects that are similar from input to output.
+        Use the invariant properties of the objects to determine if they are the same object or not.
+        """
+        tolerance = 0.5  # Set a tolerance level for comparing Hu moments
+        object_frames = []
+        for id, entry in enumerate(training_data):
+            single_frame = {}
+            single_frame["set_id"] = id
+            input_objects = self._identify_objects(entry.get_input_data().data())
+            output_objects = self._identify_objects(entry.get_output_data().data())
+            for input_object in input_objects:
+                # Use the log Hu moments to find if object is similar in input and output
+                # Use euclidean distance between log Hu moments to determine if objects are the same
+                if input_object.hu_moments is not None:
+                    distances = [
+                        np.linalg.norm(input_object.log_hu - output_object.log_hu)
+                        for output_object in output_objects
+                    ]
+                    # store any objects that pass the threshold as similar objects
+                    for i, distance in enumerate(distances):
+                        if distance < tolerance:
+                            single_frame["input_object"] = input_object
+                            single_frame["output_object"] = output_objects[i]
+                            single_frame["distance"] = distance
+            object_frames.append(single_frame)
+        return object_frames
 
     def run_initial_checks(self, training_data):
         """
@@ -137,55 +138,172 @@ class ArcAgent:
         self._check_input_kept(training_data)
         if self.grid_size_matches:
             self._check_num_cells_changed(training_data)
+        self.similar_objects = self.check_similar_objects(training_data)
 
     # --------------------------------------------------------------------------
-    # Level 1 Checks
+    # Basic Transformations
     # --------------------------------------------------------------------------
-
-    def check_objects_remained(self, training_data: list[ArcSet]) -> int:
+    def find_transformations_between_objects(
+        self, object_frames: list[dict]
+    ) -> ArcTransformation:
         """
-        Check in the training data, if the output contains the same objects as the input even if moved
-        If all training data has the same number of objects matched, return that number.
-        Otherwise return None for future implementation.
+        If there are similar objects between input and output,
+        find the associated transformations between the objects using the raw moments of the objects.
         """
-        num_objects_matched = []
-        for entry in training_data:
-            input_objects = self._identify_objects(entry.get_input_data().data())
-            output_objects = self._identify_objects(entry.get_output_data().data())
-            # Account for differences in grid size between input and output
-            obj_matched = []
-            for i, input_obj in enumerate(input_objects):
-                input_obj_rel_pos = input_obj.relative_position(input_obj)
-                for output_obj in output_objects:
-                    output_obj_rel_pos = output_obj.relative_position(output_obj)
-                    if input_obj_rel_pos == output_obj_rel_pos:
-                        obj_matched.append(True)
-                    else:
-                        obj_matched.append(False)
-            num_objects_matched.append(sum(obj_matched))
+        transformation_list = []
+        for entry in object_frames:
+            transformation = ArcTransformation()
+            transformation.set_id = entry["set_id"]
+            input_object_props = entry["input_object"].general_props
+            output_object_props = entry["output_object"].general_props
+            # Use the centroid of the objects to determine the translation between the objects
+            translation_x = (
+                output_object_props.centroid[0] - input_object_props.centroid[0]
+            )
+            translation_y = (
+                output_object_props.centroid[1] - input_object_props.centroid[1]
+            )
 
-        if len(set(num_objects_matched)) == 1:
-            return num_objects_matched[0]
+            # if both translations are 0, then likely a colour change or rotation
+            if translation_x == 0 and translation_y == 0:
+                transformation.translation = None
+                # Check colour change
+                if entry["input_object"].color != entry["output_object"].color:
+                    transformation.color = (
+                        entry["input_object"].color,
+                        entry["output_object"].color,
+                    )
+                # Check rotations
+                for i, input_rotation in enumerate(
+                    entry["input_object"].all_rotations()
+                ):
+                    if np.array_equal(
+                        input_rotation, entry["output_object"].isolated_object().data()
+                    ):
+                        rotation_angle = i * 90
+                        transformation.rotation = rotation_angle
+            else:
+                transformation.translation = (translation_x, translation_y)
+
+            transformation_list.append(transformation)
+
+        # Check if all transformation in the list are identical
+        if all(
+            transformation_list[0].__dict__ == transformation.__dict__
+            for transformation in transformation_list
+        ):
+            return transformation_list[0]
         else:
-            return 0
+            return None
 
-    def check_propagation_pattern(self, training_data: list[ArcSet]) -> bool:
+    def check_non_object_transformation(
+        self, training_data: list[ArcSet], object_frames: list[dict]
+    ) -> dict:
         """
-        Check in the training data,
-        if there is a propagation pattern where the output is a shifted version of the input.
+        If there are similar objects but no clear object-based transformation, based on grid size matching check:
+        1. If new grid size is same as bounding box of the object, then likely a cropping transformation.
+        2. If object maintained but new cells are added, compare the new cells to find pattern
+            temp: just add new cells to transformation dict for now, could be used to find a pattern in the new cells in future work.
         """
-        for entry in training_data:
-            input_data = entry.get_input_data()
-            output_data = entry.get_output_data()
-            if not np.array_equal(
-                input_data.data(), np.roll(output_data.data(), shift=1, axis=0)
-            ):
-                return False
-        return True
+        # Check if grid size of output matches bounding box of object in output
+        transformation_list = []
+        for entry in object_frames:
+            transformation = ArcTransformation()
+            transformation.set_id = entry["set_id"]
+            training_set = training_data[entry["set_id"]]
+            # 1. Check cropping transformation based on grid size
+            if training_set.get_output_data().shape() == entry["input_object"].shape():
+                transformation.cropping = True
+            # 2. Check if new cells are added and if so, which ones
+            if self.all_input_kept and self.num_cells_changed is not None:
+                input_cells = set(tuple(pos) for pos in entry["input_object"].cell_pos)
+                output_cells = set(
+                    tuple(pos) for pos in entry["output_object"].cell_pos
+                )
+                new_cells = output_cells - input_cells
+                transformation.new_cells = new_cells
+            transformation_list.append(transformation)
+        # Check if all transformation in the list are identical
+        if all(
+            transformation_list[0].__dict__ == transformation.__dict__
+            for transformation in transformation_list
+        ):
+            return transformation_list[0]
+        else:
+            return None
+
+    def transform(self, obj: ArcObject, transformation: ArcTransformation) -> ArcObject:
+        """
+        Transform the input object based on the identified transformation.
+        """
+        transformed_obj = obj
+        if transformation.translation is not None:
+            transformed_obj = transformation.translate(transformed_obj)
+        if transformation.rotation is not None:
+            transformed_obj = transformation.rotate(transformed_obj)
+        if transformation.color is not None:
+            transformed_obj = transformation.change_color(transformed_obj)
+        if transformation.cropping is not None:
+            transformed_obj = transformation.crop(transformed_obj)
+        if transformation.new_cells is not None:
+            transformed_obj = transformation.fill_new_cells(transformed_obj)
+        return transformed_obj
+
+    def test_transform(
+        self, training_data: list[ArcSet], transformation: ArcTransformation
+    ):
+        """
+        Test the identified transformation on one of the training data input and check if the transformed input matches the output.
+        """
+        for entry in training_data[:1]:  # Just test on the first entry for now
+            input_objects = self._identify_objects(entry.get_input_data().data())
+            for input_object in input_objects:
+                transformed_object = self.transform(input_object, transformation)
+                if np.array_equal(transformed_object, entry.get_output_data().data()):
+                    print("Transformation works on the training data.")
+                    self.test_passed = True
+                else:
+                    print("Transformation does not work on the training data.")
 
     # -----------------------------------------------------------------------------
     # Make Predictions
     # -----------------------------------------------------------------------------
+
+    def run_basic_transformations(
+        self, training_data: list[ArcSet]
+    ) -> ArcTransformation:
+        """
+        If the input cells are kept, run all simple transformations and check if they are consistent across the training data.
+        """
+        # First treat whole grid as ArcObject and check for transformations based on whole grid properties
+        transformation_list = []
+        for entry in training_data:
+            input_object = ArcObject( )
+            output_object = ArcObject(
+                color=None,
+                cell_pos=[
+                    (i, j)
+                    for i in range(entry.get_output_data().shape()[0])
+                    for j in range(entry.get_output_data().shape()[1])
+                ],
+                general_props=None,
+            )
+            transformation = self.find_transformations_between_objects(
+                [{"input_object": input_object, "output_object": output_object}]
+            )
+            if transformation:
+                print("Found a basic transformation based on whole grid properties.")
+                self.test_transform(training_data, transformation)
+                transformation_list.append(transformation)
+
+        # Check if all transformation in the list are identical
+        if len(transformation_list) > 0 and all(
+            transformation_list[0].__dict__ == transformation.__dict__
+            for transformation in transformation_list
+        ):
+            return transformation_list[0]
+        else:
+            return None
 
     def make_predictions(self, arc_problem: ArcProblem) -> list[np.ndarray]:
         """
@@ -211,17 +329,41 @@ class ArcAgent:
         # Run initial checks on the training data
         self.run_initial_checks(arc_problem.training_set())
 
-        if self.check_objects_remained(arc_problem.training_set()) > 0:
-            print("Objects remained in the training data.")
-            if self.grid_size_matches:
-                # Produce predictions with the objects in the same position as the input
-                input_object = self._identify_objects(input_test.data())[0]
-                output = np.zeros_like(input_test.data())
-                for pos in input_object.cell_pos:
-                    output[pos] = input_object.color
-                predictions.append(output)
+        # If the input cells are kept, run all simple transformations
+        if self.all_input_kept:
+            transformation = self.run_basic_transformations(arc_problem.training_set())
+            prediction = self.transform(input_test.data(), transformation)
+            predictions.append(prediction)
+
+        if self.test_passed:
+            return predictions
+
+        if len(self.similar_objects) > 0:
+            # Determine transformation between similar objects
+            transformation = self.find_transformations_between_objects(
+                self.similar_objects
+            )
+            test_objects = self._identify_objects(input_test.data())
+
+            if transformation:
+                # Test transformation on training data
+                self.test_transform(arc_problem.training_set(), transformation)
+                # Apply transformation to test input
+                prediction = self.transform(
+                    input_test.data(), test_objects, transformation
+                )
+                predictions.append(prediction)
             else:
-                # Produce predictions with the objects in the same relative position as the input
-                input_object = self._identify_objects(input_test.data())[0]
-                predictions.append(input_object.isolated_object().data())
+                # Assume non object-based transformation, could be grid-based
+                transformation = self.check_non_object_transformation(
+                    arc_problem.training_set(), self.similar_objects
+                )
+                if transformation:
+                    # Test transformation on training data
+                    self.test_transform(arc_problem.training_set(), transformation)
+                    prediction = self.transform(
+                        input_test.data(), test_objects, transformation
+                    )
+                    predictions.append(prediction)
+
         return predictions
