@@ -116,6 +116,8 @@ if __name__ == "__main__":
         milestone_file.write(
             f"{m_answer_set.problem_name()}," f"{m_correct}," f'"{m_cor_ans}",'
         )
+        if m_correct:
+            print("Correctly solved problem: " + m_answer_set.problem_name())
         if len(predictions) == 0:
             milestone_file.write("empty\n")
             continue
@@ -125,10 +127,13 @@ if __name__ == "__main__":
             else:
                 milestone_file.write(f'"{pred.tolist()}",')
             # Save image
-            create_image_from_array(
-                m_answer_set.test_set().get_output_data().data(),
-                pred,
-                os.path.join("Milestone_Results", f"{m_answer_set.problem_name()}.png"),
-            )
+            if idx == 1:  # Only save image for the top prediction
+                create_image_from_array(
+                    m_answer_set.test_set().get_output_data().data(),
+                    pred,
+                    os.path.join(
+                        "Milestone_Results", f"images/{m_answer_set.problem_name()}.png"
+                    ),
+                )
 
     milestone_file.close()
