@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore")
 # Shared utility: rebuild ITE-RD from posterior (idempotent — safe to re-run)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_ite_rd(trace, X_mu_arr, X_tau_arr, T_arr, constant_intercept):
+def build_ite_rd(trace, X_mu_arr, X_tau_arr, T_arr, constant_intercept, mu_term="mu", tau_term="tau"):
     """
     Return ite_rd (n_draws × N), rd_treated (n_draws × n_treated),
     mean_rd_treated (n_treated,), treated_mask (N,).
@@ -40,8 +40,8 @@ def build_ite_rd(trace, X_mu_arr, X_tau_arr, T_arr, constant_intercept):
         RD_i = Φ(c + μ_i + τ_i) − Φ(c + μ_i)
     """
     N = X_mu_arr.shape[0]
-    mu_s  = trace.posterior["mu"].values.reshape(-1, N)   # (D, N)
-    tau_s = trace.posterior["tau"].values.reshape(-1, N)  # (D, N)
+    mu_s  = trace.posterior[mu_term].values.reshape(-1, N)   # (D, N)
+    tau_s = trace.posterior[tau_term].values.reshape(-1, N)  # (D, N)
 
     eta_0   = mu_s + constant_intercept
     eta_1   = mu_s + tau_s + constant_intercept
@@ -53,14 +53,14 @@ def build_ite_rd(trace, X_mu_arr, X_tau_arr, T_arr, constant_intercept):
 
     return ite_rd, rd_treated, mean_rd_t, treated_mask
 
-def build_ite_rd_inplace(trace, X_mu_arr, X_tau_arr, T_arr, constant_intercept, chunk_size=500):
+def build_ite_rd_inplace(trace, X_mu_arr, X_tau_arr, T_arr, constant_intercept, mu_term="mu", tau_term="tau", chunk_size=500):
     """
     Returns the full arrays but uses float32 and chunked execution 
     to prevent memory spikes during calculation.
     """
     N = X_mu_arr.shape[0]
-    mu_s  = trace.posterior["mu"].values.reshape(-1, N)   
-    tau_s = trace.posterior["tau"].values.reshape(-1, N)  
+    mu_s  = trace.posterior[mu_term].values.reshape(-1, N)   
+    tau_s = trace.posterior[tau_term].values.reshape(-1, N)  
     D = mu_s.shape[0]
 
     treated_mask = T_arr.astype(bool)
@@ -538,6 +538,10 @@ def plot_hte_forest(ite_rd, X_full, T_arr,
     att_mean  = att_draws.mean()
     ax.axvline(att_mean, color="#e67e22", lw=1.2, linestyle=":",
                label=f"Overall ATT = {att_mean:.4f}")
+
+    print(f"Overall ATT = {att_mean:.4f} (95% HDI: ")
+    att_hdi = az.hdi(att_draws, hdi_prob=hdi_prob)
+    print(f"  {att_hdi[0]:.4f} to {att_hdi[1]:.4f})")
 
     ax.set_yticks(y_positions)
     ax.set_yticklabels(forest_df["label"].tolist(), fontsize=9.5)
