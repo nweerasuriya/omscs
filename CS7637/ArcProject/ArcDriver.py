@@ -87,7 +87,8 @@ if __name__ == "__main__":
 
     # Here you can use this to open other milestone data directories for running against
     #  you'll should copy this code and change the path to the milestone you want to load (B, C or D)
-    milestone_path = os.path.join("Milestones", "B")
+    milestone = "B"
+    milestone_path = os.path.join("Milestones", milestone)
     milestone_data: list[str] = os.listdir(milestone_path)
 
     arc_milestone_problems: list[ArcProblem] = load_arc_problems(
@@ -103,7 +104,7 @@ if __name__ == "__main__":
     arc_agent: ArcAgent = ArcAgent()
 
     milestone_data_set = run_training_data(arc_agent, arc_milestone_problems)
-    milestone_file = open("Milestone_Results/Milestone_Results.csv", "w")
+    milestone_file = open(f"Milestone_Results_{milestone}/Milestone_Results.csv", "w")
 
     print("location of results file: " + os.path.abspath(milestone_file.name))
     milestone_file.write(
@@ -132,7 +133,8 @@ if __name__ == "__main__":
                     m_answer_set.test_set().get_output_data().data(),
                     pred,
                     os.path.join(
-                        "Milestone_Results", f"images/{m_answer_set.problem_name()}.png"
+                        f"Milestone_Results_{milestone}",
+                        f"images/{m_answer_set.problem_name()}.png",
                     ),
                 )
 

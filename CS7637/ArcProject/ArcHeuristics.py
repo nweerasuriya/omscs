@@ -16,6 +16,7 @@ from ArcMemory import ArcState, GridState, ObjectState
 from ArcSet import ArcSet
 
 HU_TOLERANCE = 1
+MUTATION_TYPES = ["growth", "shrink", "shape_change", "translation"]
 
 
 @dataclass
@@ -29,6 +30,11 @@ class GridDifference:
     # Shape
     input_shape: tuple[int, int]
     output_shape: tuple[int, int]
+
+    # Object count
+    input_object_count: int
+    output_object_count: int
+    object_count_changed: bool
 
     # Colour differences
     input_colours: set[int]
@@ -73,6 +79,19 @@ class ObjectDifference:
 
 
 @dataclass
+class MutatatedObject:
+    """
+    Object that has mutated from input to output
+    """
+
+    set_id: int
+    input_object_id: int
+    output_object_id: int
+    mutation_types: list[str]
+    direction_vector: tuple[float, float] = None
+
+
+@dataclass
 class ConservedAllSets:
     """
     Properties conserved across all sets in a task
@@ -95,10 +114,11 @@ class HeuristicSummary:
     conserved_properties: ConservedAllSets
     grid_differences: list[GridDifference]
     object_differences: list[list[ObjectDifference]]
-    pruned_primitives: frozenset[str]
+    mutations: list[MutatatedObject]
+    split_grid: dict[str, bool]
 
 
-class ArcHeuristics:
+class HeuristicEngine:
     """
     Heuristic analysis for all sets in a ArcProblem
     """
@@ -113,6 +133,8 @@ class ArcHeuristics:
         # Analyse each set for grid and object differences
         grid_differences: list[GridDifference] = []
         object_differences: list[list[ObjectDifference]] = []
+        mutation_list: list[MutatatedObject] = []
+        split_grid: list[dict[str, bool]] = []
 
         for set_id, entry in enumerate(training_data):
             input_array = entry.get_input_data().data()
@@ -131,17 +153,36 @@ class ArcHeuristics:
             object_diff = self._check_similar_objects(set_id, input_state, output_state)
             object_differences.append(object_diff)
 
+            # Analyse object mutations
+            mutations = self._check_object_mutations(set_id, input_state, output_state)
+            mutation_list.append(mutations)
+
+            # Analyse split grid
+            split_grid_result = self._check_split_grid(input_array)
+            split_grid.append(split_grid_result)
+
+        # If any one of the directions is true in all sets, then the split grid is considered true for that direction
+        if any(
+            all(split[direction] for split in split_grid) for direction in split_grid[0]
+        ):
+            split_grid = {
+                direction: all(split[direction] for split in split_grid)
+                for direction in split_grid[0]
+            }
+        else:
+            split_grid = None
+
         # Analyse conserved properties across all sets
         conserved_properties = self._analyse_conserved_properties(
             grid_differences, object_differences
         )
-        pruned_primitives = self._prune_primitives(conserved_properties)
 
         return HeuristicSummary(
             conserved_properties=conserved_properties,
             grid_differences=grid_differences,
             object_differences=object_differences,
-            pruned_primitives=pruned_primitives,
+            mutations=mutation_list,
+            split_grid=split_grid,
         )
 
     # -----------------------------------------------------------------------------
@@ -157,6 +198,11 @@ class ArcHeuristics:
         input_shape = input_array.shape
         output_shape = output_array.shape
         shape_changed = input_shape != output_shape
+
+        # Object count differences
+        input_object_count = len(self.state_cache[set_id]["input"].objects)
+        output_object_count = len(self.state_cache[set_id]["output"].objects)
+        object_count_changed = input_object_count != output_object_count
 
         # Colour differences
         input_colours = set(np.unique(input_array))
@@ -188,11 +234,17 @@ class ArcHeuristics:
             set_id=set_id,
             input_shape=input_shape,
             output_shape=output_shape,
+            # Object count
+            input_object_count=input_object_count,
+            output_object_count=output_object_count,
+            object_count_changed=object_count_changed,
+            # Colour differences
             input_colours=input_colours,
             output_colours=output_colours,
             new_colours=new_colours,
             removed_colours=removed_colours,
             colour_changed=colour_changed,
+            # Symmetry differences
             input_symmetry_h=input_symmetry_h,
             output_symmetry_h=output_symmetry_h,
             input_symmetry_v=input_symmetry_v,
@@ -203,6 +255,26 @@ class ArcHeuristics:
             output_symmetry_anti_diag=output_symmetry_anti_diag,
             symmetry_changed=symmetry_changed,
         )
+
+    def _check_split_grid(self, input_array: np.ndarray) -> dict[str, bool]:
+        """
+        Check if the input grid is split by a line in the middle of the grid populated by non zero values.
+        """
+        rows, cols = input_array.shape
+        # Check for vertical split
+        vertical_split = np.all(input_array[:, cols // 2] != 0)
+        # Check for horizontal split
+        horizontal_split = np.all(input_array[rows // 2, :] != 0)
+        # diagonal split
+        diagonal_split = np.all(np.diag(input_array) != 0)
+        # anti diagonal split
+        anti_diagonal_split = np.all(np.diag(np.fliplr(input_array)) != 0)
+        return {
+            "vertical": vertical_split,
+            "horizontal": horizontal_split,
+            "diagonal": diagonal_split,
+            "anti_diagonal": anti_diagonal_split,
+        }
 
     # -----------------------------------------------------------------------------
     # Object-level heuristics
@@ -247,6 +319,94 @@ class ArcHeuristics:
                         )
         return object_matches
 
+    def _bbox_overlap(
+        self, bbox1: tuple[int, int, int, int], bbox2: tuple[int, int, int, int]
+    ) -> bool:
+        """
+        Check if two bounding boxes overlap.
+         Bounding box format is (min_row, min_col, max_row, max_col)
+        """
+        return not (
+            bbox1[2] <= bbox2[0]
+            or bbox1[0] >= bbox2[2]
+            or bbox1[3] <= bbox2[1]
+            or bbox1[1] >= bbox2[3]
+        )
+
+    def _check_object_mutations(
+        self, set_id: int, input_state: ArcState, output_state: ArcState
+    ):
+        """
+        Identify objects which have mutated from the input to output.
+        Only consider subsets of objects for now. So one onject must be a subset of the other.
+
+        Consider shape, size and translation changes. Check as matrix so combinations of changes can be detected.
+        """
+        mutations = []
+
+        for i, input_object in enumerate(input_state.objects):
+            for o, output_object in enumerate(output_state.objects):
+                # Check bounding box of one object is a subset of the other
+                if not (
+                    self._bbox_overlap(
+                        input_object.bounding_box, output_object.bounding_box
+                    )
+                ):
+                    continue
+
+                # Determine type of change
+                mutation_types = []
+
+                input_pixels = input_object.cell_positions
+                output_pixels = output_object.cell_positions
+
+                is_subset = False
+                is_superset = False
+
+                # Check if one object is a subset of the other (frozenset property)
+                if len(input_pixels) < len(output_pixels):
+                    if input_pixels <= output_pixels:
+                        mutation_types.append("growth")
+                        is_subset = True
+                elif len(input_pixels) > len(output_pixels):
+                    if output_pixels <= input_pixels:
+                        mutation_types.append("shrink")
+                        is_superset = True
+
+                # Shape Change
+                if len(input_pixels) != len(output_pixels) and not (
+                    is_subset or is_superset
+                ):
+                    mutation_types.append("shape_change")
+                if (
+                    len(input_pixels) == len(output_pixels)
+                    and input_object.bounding_box != output_object.bounding_box
+                ):
+                    mutation_types.append("shape_change")
+
+                direction_vector = (
+                    (output_object.centroid[0] - input_object.centroid[0]),
+                    (output_object.centroid[1] - input_object.centroid[1]),
+                )
+                # Translation if there is a change in position but not shape or size
+                if mutation_types == [] and direction_vector != (0, 0):
+                    mutation_types.append("translation")
+
+                # Add mutation direction information to input_state
+                current_mutation_types = input_state.objects[i].mutation_types
+                current_mutation_vectors = input_state.objects[i].mutation_vectors
+                input_state.objects[i] = input_state.objects[i]._replace(
+                    mutation_types=current_mutation_types.union(mutation_types),
+                    mutation_vectors=current_mutation_vectors + (direction_vector,),
+                )
+                return MutatatedObject(
+                    set_id=set_id,
+                    input_object_id=i,
+                    output_object_id=o,
+                    mutation_types=mutation_types,
+                    direction_vector=direction_vector,
+                )
+
     # -----------------------------------------------------------------------------
     # Conserved properties analysis
     # -----------------------------------------------------------------------------
@@ -266,7 +426,9 @@ class ArcHeuristics:
             ),
             colours=all(not grid_diff.colour_changed for grid_diff in grid_differences),
             object_count=all(
-                len(object_diff) == 0 for object_diff in object_differences
+                len(self.state_cache[i]["input"].objects)
+                == len(self.state_cache[i]["output"].objects)
+                for i in range(len(grid_differences))
             ),
             object_colours=all(
                 all(
@@ -284,36 +446,3 @@ class ArcHeuristics:
                 for grid_diff in grid_differences
             ),
         )
-
-    # -----------------------------------------------------------------------------
-    # Pruning primitives based on conserved properties
-    # -----------------------------------------------------------------------------
-    def _prune_primitives(
-        self, conserved_properties: ConservedAllSets
-    ) -> frozenset[str]:
-        """
-        Compute the set of primitives to prune based on conserved properties.
-        """
-        pruned_primitives = set()
-
-        if conserved_properties.grid_size:
-            pruned_primitives.update({"tile", "crop_object", "crop_background_out"})
-        if conserved_properties.colours:
-            pruned_primitives.update(
-                {
-                    "change_colour",
-                    "update_colour",
-                }
-            )
-        if conserved_properties.object_count:
-            pruned_primitives.update({"duplicate_object", "remove_object"})
-        if conserved_properties.object_colours:
-            pruned_primitives.update({"change_object_colour"})
-        if conserved_properties.object_shapes:
-            pruned_primitives.update({"rotate_object", "flip_object"})
-        if not conserved_properties.all_square_grid:
-            pruned_primitives.update(
-                {"mirror_diagonal_top_left", "mirror_diagonal_bottom_right"}
-            )
-
-        return frozenset(pruned_primitives)

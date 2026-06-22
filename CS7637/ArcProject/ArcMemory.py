@@ -32,42 +32,136 @@ Colour = int
 GRID_PRIMITIVES: list[callable] = []
 OBJECT_PRIMITIVES: list[callable] = []
 CELL_PRIMITIVES: list[callable] = []
+SPLIT_GRID_PRIMITIVES: list[callable] = []
 
 
-def grid_primitive(func):
-    """Decorator to automatically transition an ArcState to a array and back."""
+def grid_primitive(func=None, *, tags=None):
+    """
+    Decorator to automatically transition an ArcState to a array and back.
+    Add tags to help in pruning.
+    """
 
-    @functools.wraps(func)
-    def wrapper(state: ArcState, *args, **kwargs) -> ArcState:
-        raw_grid = state.to_array()
-        transformed_grid = func(raw_grid, *args, **kwargs)
-        return ArcState.from_array(transformed_grid, extract_objects=True)
+    def decorator(inner_func):
+        @functools.wraps(inner_func)
+        def wrapper(state: ArcState, *args, **kwargs) -> ArcState:
+            raw_grid = state.to_array()
+            transformed_grid = inner_func(raw_grid, *args, **kwargs)
+            return ArcState.from_array(transformed_grid, extract_objects=True)
 
-    GRID_PRIMITIVES.append(wrapper)
-    return wrapper
+        wrapper.tags = frozenset(tags or ())
+        GRID_PRIMITIVES.append(wrapper)
+        return wrapper
+
+    if func is None:
+        return decorator
+    return decorator(func)
 
 
-def object_primitive(func):
+def object_primitive(func=None, *, tags=None):
     """
     Decorator to apply a transformation directly to the object layer of an ArcState.
     """
 
-    @functools.wraps(func)
-    def wrapper(state: ArcState, *args, **kwargs) -> ArcState:
-        transformed_objects = [func(obj, *args, **kwargs) for obj in state.objects]
-        # Update grid state based on transformed objects
-        rows, cols = state.grid_state.dimensions
-        grid = np.zeros((rows, cols), dtype=int)
-        for obj in transformed_objects:
-            for r, c in obj.cell_positions:
-                if 0 <= r < rows and 0 <= c < cols:
-                    grid[r, c] = obj.colour
+    def decorator(inner_func):
+        @functools.wraps(inner_func)
+        def wrapper(state: ArcState, *args, **kwargs) -> ArcState:
+            transformed_objects = [
+                inner_func(obj, *args, **kwargs) for obj in state.objects
+            ]
+            # Update grid state based on transformed objects
+            rows, cols = state.grid_state.dimensions
+            grid = np.zeros((rows, cols), dtype=int)
+            for obj in transformed_objects:
+                for r, c in obj.cell_positions:
+                    if 0 <= r < rows and 0 <= c < cols:
+                        grid[r, c] = obj.colour
 
-        new_grid_state = GridState.from_array(grid)
-        return ArcState(grid_state=new_grid_state, objects=tuple(transformed_objects))
+            new_grid_state = GridState.from_array(grid)
+            return ArcState(
+                grid_state=new_grid_state, objects=tuple(transformed_objects)
+            )
 
-    OBJECT_PRIMITIVES.append(wrapper)
-    return wrapper
+        wrapper.tags = frozenset(tags or ())
+        OBJECT_PRIMITIVES.append(wrapper)
+        return wrapper
+
+    if func is None:
+        return decorator
+    return decorator(func)
+
+
+def _get_grid_splits(
+    grid: np.ndarray, split_type: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Split the grid into two halves based on the split axis.
+    """
+    rows, cols = grid.shape
+    if type(split_type) is set and len(split_type) == 1:
+        split_type = split_type.pop()
+    if split_type == "horizontal":
+        mid_row = rows // 2
+        top_half = grid[:mid_row, :]
+        bottom_half = grid[mid_row:, :]
+        if top_half.shape[0] != bottom_half.shape[0]:
+            return None
+        return top_half, bottom_half
+    if split_type == "vertical":
+        print("Splitting grid vertically")
+        mid_col = int(cols / 2)
+        left_half = grid[:, :mid_col]
+        right_half = grid[:, mid_col:]
+        if left_half.shape != right_half.shape:
+            return None
+        return left_half, right_half
+
+    if split_type == "diagonal":
+        if rows != cols:
+            return None
+        top_left = grid[: rows // 2, : cols // 2]
+        bottom_right = grid[rows // 2 :, cols // 2 :]
+        if top_left.shape != bottom_right.shape:
+            return None
+        return top_left, bottom_right
+
+    if split_type == "anti-diagonal":
+        if rows != cols:
+            return None
+        top_right = grid[: rows // 2, cols // 2 :]
+        bottom_left = grid[rows // 2 :, : cols // 2]
+        if top_right.shape != bottom_left.shape:
+            return None
+        return top_right, bottom_left
+
+
+# TODO: Expand to more than just halves but split at non-midpoint too
+def split_grid_primitive(func=None, *, tags=None):
+    """
+    Decorator for transformations that operate on split grids.
+    """
+
+    def decorator(inner_func):
+        @functools.wraps(inner_func)
+        def wrapper(state: ArcState, split_axis: str) -> ArcState:
+            # Split the grid into halves
+            halves = _get_grid_splits(state.to_array(), split_type=split_axis)
+            if halves is None:
+                return state
+            array_a, array_b = halves
+            print(
+                f"Applying split grid primitive {inner_func.__name__} on axis {split_axis}"
+            )
+            return ArcState.from_array(
+                inner_func(array_a, array_b), extract_objects=True
+            )
+
+        wrapper.tags = frozenset(tags or ())
+        SPLIT_GRID_PRIMITIVES.append(wrapper)
+        return wrapper
+
+    if func is None:
+        return decorator
+    return decorator(func)
 
 
 # -----------------------------------------------------------------------------
@@ -81,20 +175,19 @@ class ArcState:
     """
 
     grid_state: "GridState"
-    objects: tuple["ObjectState", ...] = field(default_factory=tuple)
+    objects: list["ObjectState"] = field(default_factory=list)
 
     def to_array(self) -> np.ndarray:
         """
         Renders the entire state back into a raw 2D numpy array.
         Used to feed existing numpy-based DSL primitives.
         """
-        # Reconstruct grid purely from background + object layers
+        # Reconstruct grid from background and object layers
         rows, cols = self.grid_state.dimensions
         grid = np.zeros((rows, cols), dtype=int)
 
         # Overlay objects onto the grid based on their positions
         for obj in self.objects:
-            # Reconcile alternate naming conventions found in ArcMemory snippets
             positions = getattr(obj, "cell_positions", getattr(obj, "cell_pos", []))
             color = getattr(obj, "color", getattr(obj, "colour", 0))
             for r, c in positions:
@@ -109,13 +202,10 @@ class ArcState:
         If extract_objects is False, only the grid layer is created.
         """
         # Grid layer extraction
-        grid_tuple: GridArray = tuple(tuple(int(x) for x in row) for row in array)
-        g_state = GridState.from_array(
-            array
-        )
+        g_state = GridState.from_array(array)
 
         if not extract_objects:
-            return cls(grid_state=g_state, objects=())
+            return cls(grid_state=g_state, objects=[])
 
         # Object layer extraction using skimage regionprops
         extracted_objects = []
@@ -135,7 +225,7 @@ class ArcState:
                 obj_state = ObjectState.from_regionprops(prop, colour=int(color))
                 extracted_objects.append(obj_state)
 
-        return cls(grid_state=g_state, objects=tuple(extracted_objects))
+        return cls(grid_state=g_state, objects=extracted_objects)
 
     def update_grid(self, new_array: np.ndarray) -> "ArcState":
         """
@@ -151,7 +241,7 @@ class ArcState:
         """
         obj_list = list(self.objects)
         obj_list[index] = new_obj_state
-        new_objects = tuple(obj_list)
+        new_objects = obj_list
 
         rows, cols = self.grid_state.dimensions
         grid = np.zeros((rows, cols), dtype=int)
@@ -260,8 +350,27 @@ class ObjectState:
     centroid: tuple[float, float]
     area: int
     cell_positions: PixelSet
-
     hu_moments: HuMoments
+
+    # mutation properties to be filled in heuristics analysis
+    mutation_types: frozenset[str] = field(default_factory=frozenset)
+    mutation_vectors: tuple[tuple[float, ...], ...] = field(default_factory=tuple)
+
+    def _replace(self, **kwargs) -> "ObjectState":
+        """
+        Helper method to update ObjectState with some properties updated.
+        """
+        return ObjectState(
+            label_id=kwargs.get("label_id", self.label_id),
+            colour=kwargs.get("colour", self.colour),
+            bounding_box=kwargs.get("bounding_box", self.bounding_box),
+            centroid=kwargs.get("centroid", self.centroid),
+            area=kwargs.get("area", self.area),
+            cell_positions=kwargs.get("cell_positions", self.cell_positions),
+            hu_moments=kwargs.get("hu_moments", self.hu_moments),
+            mutation_types=kwargs.get("mutation_types", self.mutation_types),
+            mutation_vectors=kwargs.get("mutation_vectors", self.mutation_vectors),
+        )
 
     @property
     def height(self) -> int:
@@ -277,7 +386,7 @@ class ObjectState:
         Get the object in a new grid that has the size of the bounding box of the object.
         """
         bounding_box = self.bounding_box
-        output = np.zeros(self.shape(), dtype=int)
+        output = np.zeros((self.height, self.width), dtype=int)
         for pos in self.cell_positions:
             output[pos[0] - bounding_box[0], pos[1] - bounding_box[2]] = self.colour
         return output
@@ -291,6 +400,16 @@ class ObjectState:
         return frozenset(
             (row - min_row, col - min_col) for (row, col) in self.cell_positions
         )
+
+    @property
+    def mask(self) -> np.ndarray:
+        """
+        Get the binary mask of the object in its bounding box.
+        """
+        mask = np.zeros((self.height, self.width), dtype=bool)
+        for row, col in self.normalised_pixels:
+            mask[row, col] = True
+        return mask
 
     @classmethod
     def from_regionprops(

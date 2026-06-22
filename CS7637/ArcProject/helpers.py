@@ -7,6 +7,7 @@ __author__ = "NedeeshaWeerasuriya"
 __version__ = "0.1"
 
 import inspect
+import numpy as np
 from ArcMemory import ArcState
 from ArcHeuristics import HeuristicSummary
 
@@ -56,6 +57,17 @@ def build_kwarg_pool(
             pool.setdefault("obj_in_colour", set()).add(in_obj.colour)
             pool.setdefault("obj_out_colour", set()).add(out_obj.colour)
             pool.setdefault("obj_colours", set()).add((in_obj.colour, out_obj.colour))
+
+            # Mutation related parameters
+            pool.setdefault("mutation_types", set()).update(in_obj.mutation_types)
+            pool.setdefault("mutation_vectors", set()).update(in_obj.mutation_vectors)
+
+    # Split related parameters
+    if hs.split_grid:
+        split_map = {direction for direction, active in hs.split_grid.items() if active}
+        # For now keep only a single string value
+        if split_map:
+            pool.setdefault("split_axis", set()).update(split_map)
     return pool
 
 
@@ -63,6 +75,8 @@ def check_relevant_kwargs(func: callable, kwarg_pool: dict[str, list]) -> list[d
     """
     Check which parameters are relevant for a given function and return a list of possible parameter combinations from the pool.
     """
-    sig = inspect.signature(func)
-    relevant_kwargs = {k: kwarg_pool[k] for k in sig.parameters if k in kwarg_pool}
+    wrapper_params = set(inspect.signature(func, follow_wrapped=False).parameters)
+    inner_params = set(inspect.signature(func, follow_wrapped=True).parameters)
+    all_params = wrapper_params.union(inner_params)
+    relevant_kwargs = {k: kwarg_pool[k] for k in all_params if k in kwarg_pool}
     return relevant_kwargs
