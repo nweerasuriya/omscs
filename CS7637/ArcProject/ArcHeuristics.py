@@ -88,7 +88,8 @@ class MutatatedObject:
     input_object_id: int
     output_object_id: int
     mutation_types: list[str]
-    direction_vector: tuple[float, float] = None
+    direction_vector: set[tuple[int, int]] = field(default_factory=set)
+    centroid_change: tuple[float, float] = field(default_factory=lambda: (0.0, 0.0))
 
 
 @dataclass
@@ -204,9 +205,9 @@ class HeuristicEngine:
         output_object_count = len(self.state_cache[set_id]["output"].objects)
         object_count_changed = input_object_count != output_object_count
 
-        # Colour differences
-        input_colours = set(np.unique(input_array))
-        output_colours = set(np.unique(output_array))
+        # Colour differences not including 0
+        input_colours = set(np.unique(input_array)) - {0}
+        output_colours = set(np.unique(output_array)) - {0}
         new_colours = output_colours - input_colours
         removed_colours = input_colours - output_colours
         colour_changed = bool(new_colours or removed_colours)
@@ -258,13 +259,18 @@ class HeuristicEngine:
 
     def _check_split_grid(self, input_array: np.ndarray) -> dict[str, bool]:
         """
-        Check if the input grid is split by a line in the middle of the grid populated by non zero values.
+        Check if the input grid is split by a straight line anywhere in the grid populated by non zero values.
+        For diagonal splits, check if the diagonal or anti diagonal is populated by non zero values.
         """
         rows, cols = input_array.shape
         # Check for vertical split
-        vertical_split = np.all(input_array[:, cols // 2] != 0)
+        vertical_split = any(
+            np.all(input_array[:, col] != 0) for col in range(1, cols - 1)
+        )
         # Check for horizontal split
-        horizontal_split = np.all(input_array[rows // 2, :] != 0)
+        horizontal_split = any(
+            np.all(input_array[row, :] != 0) for row in range(1, rows - 1)
+        )
         # diagonal split
         diagonal_split = np.all(np.diag(input_array) != 0)
         # anti diagonal split
@@ -324,26 +330,25 @@ class HeuristicEngine:
     ) -> bool:
         """
         Check if two bounding boxes overlap.
-         Bounding box format is (min_row, min_col, max_row, max_col)
+        Bounding box format is (min_row, max_row, min_col, max_col).
         """
-        return not (
-            bbox1[2] <= bbox2[0]
-            or bbox1[0] >= bbox2[2]
-            or bbox1[3] <= bbox2[1]
-            or bbox1[1] >= bbox2[3]
-        )
+        min_row1, max_row1, min_col1, max_col1 = bbox1
+        min_row2, max_row2, min_col2, max_col2 = bbox2
+
+        row_overlap = min_row1 <= max_row2 and min_row2 <= max_row1
+        col_overlap = min_col1 <= max_col2 and min_col2 <= max_col1
+
+        return row_overlap and col_overlap
 
     def _check_object_mutations(
         self, set_id: int, input_state: ArcState, output_state: ArcState
     ):
         """
         Identify objects which have mutated from the input to output.
-        Only consider subsets of objects for now. So one onject must be a subset of the other.
+        Only consider subsets of objects for now. So one object must be a subset of the other.
 
         Consider shape, size and translation changes. Check as matrix so combinations of changes can be detected.
         """
-        mutations = []
-
         for i, input_object in enumerate(input_state.objects):
             for o, output_object in enumerate(output_state.objects):
                 # Check bounding box of one object is a subset of the other
@@ -384,12 +389,12 @@ class HeuristicEngine:
                 ):
                     mutation_types.append("shape_change")
 
-                direction_vector = (
+                centroid_change = (
                     (output_object.centroid[0] - input_object.centroid[0]),
                     (output_object.centroid[1] - input_object.centroid[1]),
                 )
                 # Translation if there is a change in position but not shape or size
-                if mutation_types == [] and direction_vector != (0, 0):
+                if mutation_types == [] and centroid_change != (0, 0):
                     mutation_types.append("translation")
 
                 # Add mutation direction information to input_state
@@ -397,14 +402,14 @@ class HeuristicEngine:
                 current_mutation_vectors = input_state.objects[i].mutation_vectors
                 input_state.objects[i] = input_state.objects[i]._replace(
                     mutation_types=current_mutation_types.union(mutation_types),
-                    mutation_vectors=current_mutation_vectors + (direction_vector,),
+                    mutation_vectors=current_mutation_vectors + (centroid_change,),
                 )
                 return MutatatedObject(
                     set_id=set_id,
                     input_object_id=i,
                     output_object_id=o,
                     mutation_types=mutation_types,
-                    direction_vector=direction_vector,
+                    centroid_change=centroid_change,
                 )
 
     # -----------------------------------------------------------------------------

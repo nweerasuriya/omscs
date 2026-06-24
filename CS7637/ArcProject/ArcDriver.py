@@ -87,7 +87,7 @@ if __name__ == "__main__":
 
     # Here you can use this to open other milestone data directories for running against
     #  you'll should copy this code and change the path to the milestone you want to load (B, C or D)
-    milestone = "B"
+    milestone = "C"
     milestone_path = os.path.join("Milestones", milestone)
     milestone_data: list[str] = os.listdir(milestone_path)
 
@@ -111,7 +111,7 @@ if __name__ == "__main__":
         "Problem Name, Correct, Correct Answer, Prediction 1, Prediction 2, Prediction 3\n"
     )
     for i, m_answer_set in enumerate(milestone_data_set.keys()):
-        print("Problem: " + m_answer_set.problem_name())
+        #print("Problem: " + m_answer_set.problem_name())
         m_correct, predictions = milestone_data_set[m_answer_set]
         m_cor_ans = m_answer_set.test_set().get_output_data().data().tolist()
         milestone_file.write(

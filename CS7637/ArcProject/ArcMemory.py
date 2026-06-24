@@ -18,6 +18,7 @@ import numpy as np
 import functools
 from dataclasses import dataclass, field
 from skimage.measure import label, regionprops
+from helpers import get_grid_splits
 
 # -----------------------------------------------------------------------------
 # Type Aliases
@@ -90,50 +91,6 @@ def object_primitive(func=None, *, tags=None):
     return decorator(func)
 
 
-def _get_grid_splits(
-    grid: np.ndarray, split_type: str
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Split the grid into two halves based on the split axis.
-    """
-    rows, cols = grid.shape
-    if type(split_type) is set and len(split_type) == 1:
-        split_type = split_type.pop()
-    if split_type == "horizontal":
-        mid_row = rows // 2
-        top_half = grid[:mid_row, :]
-        bottom_half = grid[mid_row:, :]
-        if top_half.shape[0] != bottom_half.shape[0]:
-            return None
-        return top_half, bottom_half
-    if split_type == "vertical":
-        print("Splitting grid vertically")
-        mid_col = int(cols / 2)
-        left_half = grid[:, :mid_col]
-        right_half = grid[:, mid_col:]
-        if left_half.shape != right_half.shape:
-            return None
-        return left_half, right_half
-
-    if split_type == "diagonal":
-        if rows != cols:
-            return None
-        top_left = grid[: rows // 2, : cols // 2]
-        bottom_right = grid[rows // 2 :, cols // 2 :]
-        if top_left.shape != bottom_right.shape:
-            return None
-        return top_left, bottom_right
-
-    if split_type == "anti-diagonal":
-        if rows != cols:
-            return None
-        top_right = grid[: rows // 2, cols // 2 :]
-        bottom_left = grid[rows // 2 :, : cols // 2]
-        if top_right.shape != bottom_left.shape:
-            return None
-        return top_right, bottom_left
-
-
 # TODO: Expand to more than just halves but split at non-midpoint too
 def split_grid_primitive(func=None, *, tags=None):
     """
@@ -143,17 +100,11 @@ def split_grid_primitive(func=None, *, tags=None):
     def decorator(inner_func):
         @functools.wraps(inner_func)
         def wrapper(state: ArcState, split_axis: str) -> ArcState:
-            # Split the grid into halves
-            halves = _get_grid_splits(state.to_array(), split_type=split_axis)
-            if halves is None:
+            # Split the grid into halves or thirds
+            components = get_grid_splits(state.to_array(), split_type=split_axis)
+            if components is None:
                 return state
-            array_a, array_b = halves
-            print(
-                f"Applying split grid primitive {inner_func.__name__} on axis {split_axis}"
-            )
-            return ArcState.from_array(
-                inner_func(array_a, array_b), extract_objects=True
-            )
+            return ArcState.from_array(inner_func(components), extract_objects=True)
 
         wrapper.tags = frozenset(tags or ())
         SPLIT_GRID_PRIMITIVES.append(wrapper)

@@ -40,6 +40,7 @@ class Effect:
     SYMMETRY = "effect:symmetry"
     GROWTH = "effect:growth"
     SHRINK = "effect:shrink"
+    TRANSLATE = "effect:translate"
 
 
 class PruningEngine:
@@ -163,7 +164,7 @@ class PruningEngine:
                 weights[primitive] = 0
             else:
                 relevance_score = sum(
-                    relevance_mapping.get(tag, 0) for tag in primitive_tags
+                    relevance_mapping.get(tag, 0.5) for tag in primitive_tags
                 )
                 if relevance_score > 0:
                     relevance_score = relevance_score / len(primitive_tags)

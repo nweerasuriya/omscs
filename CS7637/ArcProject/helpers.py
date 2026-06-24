@@ -2,81 +2,131 @@
 Helper functions
 """
 
-__date__ = "2026-06-12"
+__date__ = "2026-06-24"
 __author__ = "NedeeshaWeerasuriya"
 __version__ = "0.1"
 
-import inspect
+
 import numpy as np
-from ArcMemory import ArcState
-from ArcHeuristics import HeuristicSummary
 
 
-def build_kwarg_pool(
-    state_cache: dict[int, dict[str, ArcState]], hs: HeuristicSummary
-) -> dict[str, list]:
+def get_grid_splits(
+    input_array: np.ndarray, split_type: str
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Get all possible parameter values from the Heuristic Summary which will be used by the DSL primitives.
+    Check for triple split or half split in the grid.
     """
-    pool: dict[str, set] = {}
-
-    # Grid related parameters
-    for gd in hs.grid_differences:
-        in_state = state_cache[gd.set_id]["input"]
-        out_state = state_cache[gd.set_id]["output"]
-        # Colour related parameters
-        if gd.colour_changed:
-            pool.setdefault("in_colour", set()).update([c for c in gd.input_colours])
-            pool.setdefault("out_colour", set()).update([c for c in gd.output_colours])
-            pool.setdefault("new_colours", set()).update([c for c in gd.new_colours])
-            pool.setdefault("removed_colours", set()).update(
-                [c for c in gd.removed_colours]
-            )
-        pool.setdefault("in_shape", set()).add(in_state.grid_state.dimensions)
-        pool.setdefault("out_shape", set()).add(out_state.grid_state.dimensions)
-
-    # Object related parameters
-    for obj_diff_list in hs.object_differences:
-        for od in obj_diff_list:
-            in_state = state_cache[od.set_id]["input"]
-            in_id, out_id = od.object_id
-            in_obj = in_state.objects[in_id]
-            out_state = state_cache[od.set_id]["output"]
-            out_obj = out_state.objects[out_id]
-
-            # Shape related parameters
-            pool.setdefault("obj_in_shape", set()).add(in_obj.area)
-            pool.setdefault("obj_out_shape", set()).add(out_obj.area)
-
-            pool.setdefault("in_centroid", set()).add(in_obj.centroid)
-            pool.setdefault("out_centroid", set()).add(out_obj.centroid)
-            pool.setdefault("in_bbox", set()).add(in_obj.bounding_box)
-            pool.setdefault("out_bbox", set()).add(out_obj.bounding_box)
-
-            # Colour related parameters
-            pool.setdefault("obj_in_colour", set()).add(in_obj.colour)
-            pool.setdefault("obj_out_colour", set()).add(out_obj.colour)
-            pool.setdefault("obj_colours", set()).add((in_obj.colour, out_obj.colour))
-
-            # Mutation related parameters
-            pool.setdefault("mutation_types", set()).update(in_obj.mutation_types)
-            pool.setdefault("mutation_vectors", set()).update(in_obj.mutation_vectors)
-
-    # Split related parameters
-    if hs.split_grid:
-        split_map = {direction for direction, active in hs.split_grid.items() if active}
-        # For now keep only a single string value
-        if split_map:
-            pool.setdefault("split_axis", set()).update(split_map)
-    return pool
+    # convert set to string if split_type is a set
+    if type(split_type) is set and len(split_type) == 1:
+        split_type = next(iter(split_type))
+    third_splits = check_third_splits(input_array, split_type)
+    if not third_splits:
+        half_splits = split_half(input_array, split_type)
+        return half_splits
+    else:
+        return split_thirds(input_array, split_type)
 
 
-def check_relevant_kwargs(func: callable, kwarg_pool: dict[str, list]) -> list[dict]:
+def check_third_splits(input_array: np.ndarray, split_type: str) -> bool:
     """
-    Check which parameters are relevant for a given function and return a list of possible parameter combinations from the pool.
+    Check for triple split in the grid by 2 straight lines at the same distance from each other populated by non zero values.
     """
-    wrapper_params = set(inspect.signature(func, follow_wrapped=False).parameters)
-    inner_params = set(inspect.signature(func, follow_wrapped=True).parameters)
-    all_params = wrapper_params.union(inner_params)
-    relevant_kwargs = {k: kwarg_pool[k] for k in all_params if k in kwarg_pool}
-    return relevant_kwargs
+    rows, cols = input_array.shape
+    if str(split_type) == "horizontal":
+        # Check for horizontal split
+        if (rows - 2) % 3 == 0 and rows > 2:
+            line1 = (rows - 2) // 3
+            line2 = 2 * line1 + 1
+            if np.all(input_array[line1, :] != 0) and np.all(
+                input_array[line2, :] != 0
+            ):
+                return True
+
+    if str(split_type) == "vertical":
+        # Check for vertical split
+        if (cols - 2) % 3 == 0 and cols > 2:
+            line1 = (cols - 2) // 3
+            line2 = 2 * line1 + 1
+            if np.all(input_array[:, line1] != 0) and np.all(
+                input_array[:, line2] != 0
+            ):
+                return True
+    return False
+
+
+def split_thirds(
+    grid: np.ndarray, split_type: str
+) -> list[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Split the grid into three parts based on the split axis.
+    """
+    rows, cols = grid.shape
+    if type(split_type) is set and len(split_type) == 1:
+        split_type = next(iter(split_type))
+
+    if split_type == "horizontal":
+        component_height = (rows - 2) // 3
+        mid_start = component_height + 1
+        mid_end = mid_start + component_height
+        top_third = grid[:component_height, :]
+        middle_third = grid[mid_start:mid_end, :]
+        bottom_third = grid[mid_end + 1 :, :]
+        return [top_third, middle_third, bottom_third]
+
+    if split_type == "vertical":
+        component_width = (cols - 2) // 3
+        mid_start = component_width + 1
+        mid_end = mid_start + component_width
+        left_third = grid[:, :component_width]
+        middle_third = grid[:, mid_start:mid_end]
+        right_third = grid[:, mid_end + 1 :]
+        return [left_third, middle_third, right_third]
+
+    return None
+
+
+def split_half(grid: np.ndarray, split_type: str) -> list[np.ndarray, np.ndarray]:
+    """
+    Split the grid into two halves based on the split axis.
+    """
+    rows, cols = grid.shape
+    if type(split_type) is set and len(split_type) == 1:
+        split_type = next(iter(split_type))
+
+    if split_type == "horizontal":
+        mid_row = rows // 2
+        top_half = grid[:mid_row, :]
+        bottom_half = grid[mid_row + 1 :, :]
+        if top_half.shape[0] != bottom_half.shape[0]:
+            return None
+        return [top_half, bottom_half]
+
+    if split_type == "vertical":
+        mid_col = cols // 2
+        left_half = grid[:, :mid_col]
+        right_half = grid[:, mid_col + 1 :]
+        if left_half.shape[1] != right_half.shape[1]:
+            return None
+        return [left_half, right_half]
+
+    # if split_type == "diagonal":
+    #     if rows != cols:
+    #         return None
+    #     mid_row = rows // 2
+    #     mid_col = cols // 2
+    #     top_left = grid[:mid_row, :mid_col]
+    #     bottom_right = grid[mid_row:, mid_col:]
+    #     if top_left.shape != bottom_right.shape:
+    #         return None
+    #     return [top_left, bottom_right]
+
+    # if split_type == "anti-diagonal":
+    #     if rows != cols:
+    #         return None
+    #     mid_row = rows // 2
+    #     mid_col = cols // 2
+    #     top_right = grid[:mid_row, mid_col:]
+    #     bottom_left = grid[mid_row:, :mid_col]
+    #     if top_right.shape != bottom_left.shape:
+    #         return None
+    # return [top_right, bottom_left]
