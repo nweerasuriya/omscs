@@ -1,8 +1,8 @@
 """
 Property Memory Classes:
-1. Grid Layer: Stores properties of the overall grid, such as dimensions, symmetry, and color distribution
-2. Object Layer: Stores properties of individual objects, such as shape, size, color, and position
-3. Cell layers: Stores properties of individual cells, such as color and context. Context includes neighbouring cell properties
+1. Grid Layer: Stores properties of the overall grid, such as dimensions, symmetry, and colour distribution
+2. Object Layer: Stores properties of individual objects, such as shape, size, colour, and position
+3. Cell layers: Stores properties of individual cells, such as colour and context. Context includes neighbouring cell properties
 
 All state types use @dataclass(frozen=True) for immutability as these will be memory layers.
 This is a requirement for downstream use in the DSL and possibly MCTS if implemented.
@@ -17,6 +17,7 @@ __version__ = "0.1"
 import numpy as np
 import functools
 from dataclasses import dataclass, field
+from scipy import ndimage
 from skimage.measure import label, regionprops
 from helpers import get_grid_splits
 
@@ -38,7 +39,7 @@ SPLIT_GRID_PRIMITIVES: list[callable] = []
 
 def grid_primitive(func=None, *, tags=None):
     """
-    Decorator to automatically transition an ArcState to a array and back.
+    Decorator to automatically transition an ArcState to an array and back.
     Add tags to help in pruning.
     """
 
@@ -126,7 +127,7 @@ class ArcState:
     """
 
     grid_state: "GridState"
-    objects: list["ObjectState"] = field(default_factory=list)
+    objects: tuple["ObjectState"] = field(default_factory=tuple)
 
     def to_array(self) -> np.ndarray:
         """
@@ -140,10 +141,10 @@ class ArcState:
         # Overlay objects onto the grid based on their positions
         for obj in self.objects:
             positions = getattr(obj, "cell_positions", getattr(obj, "cell_pos", []))
-            color = getattr(obj, "color", getattr(obj, "colour", 0))
+            colour = getattr(obj, "colour", getattr(obj, "colour", 0))
             for r, c in positions:
                 if 0 <= r < rows and 0 <= c < cols:
-                    grid[r, c] = color
+                    grid[r, c] = colour
         return grid
 
     @classmethod
@@ -154,26 +155,29 @@ class ArcState:
         """
         # Grid layer extraction
         g_state = GridState.from_array(array)
+        grid_size = g_state.dimensions
 
         if not extract_objects:
             return cls(grid_state=g_state, objects=[])
 
         # Object layer extraction using skimage regionprops
         extracted_objects = []
-        unique_colors = np.unique(array)
+        unique_colours = np.unique(array)
 
-        for color in unique_colors:
+        for colour in unique_colours:
             # Skip background
-            if color == 0:
+            if colour == 0:
                 continue
 
-            # Create a binary mask for the specific color
-            mask = array == color
+            # Create a binary mask for the specific colour
+            mask = array == colour
             labeled_mask, num_features = label(mask, return_num=True)
             props = regionprops(labeled_mask)
 
             for prop in props:
-                obj_state = ObjectState.from_regionprops(prop, colour=int(color))
+                obj_state = ObjectState.from_regionprops(
+                    prop, colour=int(colour), grid_size=grid_size
+                )
                 extracted_objects.append(obj_state)
 
         return cls(grid_state=g_state, objects=extracted_objects)
@@ -198,10 +202,10 @@ class ArcState:
         grid = np.zeros((rows, cols), dtype=int)
         for obj in new_objects:
             positions = getattr(obj, "cell_positions", getattr(obj, "cell_pos", []))
-            color = getattr(obj, "color", getattr(obj, "colour", 0))
+            colour = getattr(obj, "colour", getattr(obj, "colour", 0))
             for r, c in positions:
                 if 0 <= r < rows and 0 <= c < cols:
-                    grid[r, c] = color
+                    grid[r, c] = colour
         new_grid_state = GridState.from_array(grid)
 
         return ArcState(grid_state=new_grid_state, objects=new_objects)
@@ -296,6 +300,7 @@ class ObjectState:
 
     label_id: int
     colour: Colour
+    grid_size: tuple[int, int]  # (rows, cols) of the grid containing the object
 
     bounding_box: tuple[int, int, int, int]  # (min_row, max_row, min_col, max_col)
     centroid: tuple[float, float]
@@ -314,6 +319,7 @@ class ObjectState:
         return ObjectState(
             label_id=kwargs.get("label_id", self.label_id),
             colour=kwargs.get("colour", self.colour),
+            grid_size=kwargs.get("grid_size", self.grid_size),
             bounding_box=kwargs.get("bounding_box", self.bounding_box),
             centroid=kwargs.get("centroid", self.centroid),
             area=kwargs.get("area", self.area),
@@ -362,10 +368,32 @@ class ObjectState:
             mask[row, col] = True
         return mask
 
+    @property
+    def is_closed(self) -> bool:
+        """
+        Check if the object is closed (connected and has no holes but could be empty inside)
+        """
+        mask = self.mask
+        if ndimage.label(mask)[1] != 1:
+            return False
+        filled = ndimage.binary_fill_holes(mask)
+        return not np.array_equal(mask, filled)
+
+    @property
+    def is_block(self) -> bool:
+        """
+        Check if the object is a solid block (no holes and filled inside)
+        Use binary_fill_holes to fill any holes and compare with the original mask.
+        If they are the same, then the object is a solid block.
+        """
+        filled_mask = ndimage.binary_fill_holes(self.mask)
+        return np.array_equal(self.mask, filled_mask)
+
     @classmethod
     def from_regionprops(
         cls,
         prop,
+        grid_size: tuple[int, int],
         colour: int,
     ) -> "ObjectState":
         """
@@ -387,4 +415,5 @@ class ObjectState:
             area=int(prop.area),
             cell_positions=pixels,
             hu_moments=log_hu,
+            grid_size=grid_size,
         )

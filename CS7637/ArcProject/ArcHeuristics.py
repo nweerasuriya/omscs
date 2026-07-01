@@ -64,7 +64,7 @@ class ObjectDifference:
     set_id: int
     object_id: tuple[int, int]
 
-    # Object counts
+    # Object
     input_object: ObjectState
     output_object: ObjectState
     hu_distance: float
@@ -88,7 +88,7 @@ class MutatatedObject:
     input_object_id: int
     output_object_id: int
     mutation_types: list[str]
-    direction_vector: set[tuple[int, int]] = field(default_factory=set)
+    direction_vector: tuple[int, int] = field(default_factory=lambda: (0, 0))
     centroid_change: tuple[float, float] = field(default_factory=lambda: (0.0, 0.0))
 
 
@@ -115,7 +115,7 @@ class HeuristicSummary:
     conserved_properties: ConservedAllSets
     grid_differences: list[GridDifference]
     object_differences: list[list[ObjectDifference]]
-    mutations: list[MutatatedObject]
+    mutations: list[list[MutatatedObject]]
     split_grid: dict[str, bool]
 
 
@@ -134,7 +134,7 @@ class HeuristicEngine:
         # Analyse each set for grid and object differences
         grid_differences: list[GridDifference] = []
         object_differences: list[list[ObjectDifference]] = []
-        mutation_list: list[MutatatedObject] = []
+        mutation_list: list[list[MutatatedObject]] = []
         split_grid: list[dict[str, bool]] = []
 
         for set_id, entry in enumerate(training_data):
@@ -342,13 +342,14 @@ class HeuristicEngine:
 
     def _check_object_mutations(
         self, set_id: int, input_state: ArcState, output_state: ArcState
-    ):
+    ) -> list[MutatatedObject]:
         """
         Identify objects which have mutated from the input to output.
         Only consider subsets of objects for now. So one object must be a subset of the other.
 
         Consider shape, size and translation changes. Check as matrix so combinations of changes can be detected.
         """
+        mutations = []
         for i, input_object in enumerate(input_state.objects):
             for o, output_object in enumerate(output_state.objects):
                 # Check bounding box of one object is a subset of the other
@@ -397,6 +398,23 @@ class HeuristicEngine:
                 if mutation_types == [] and centroid_change != (0, 0):
                     mutation_types.append("translation")
 
+                # Check direction of additional pixels for growth or shape change
+                direction_vector = (0, 0)
+                if "growth" in mutation_types or "shape_change" in mutation_types:
+                    # Find new pixels in output that are not in input
+                    new_pixels = output_pixels - input_pixels
+                    if new_pixels:
+                        new_avg_row = sum(r for r, c in new_pixels) / len(new_pixels)
+                        new_avg_col = sum(c for r, c in new_pixels) / len(new_pixels)
+
+                        # Check from centroid
+                        dir_row = new_avg_row - input_object.centroid[0]
+                        dir_col = new_avg_col - input_object.centroid[1]
+                        direction_vector = (
+                            int(np.sign(dir_row)),
+                            int(np.sign(dir_col)),
+                        )
+
                 # Add mutation direction information to input_state
                 current_mutation_types = input_state.objects[i].mutation_types
                 current_mutation_vectors = input_state.objects[i].mutation_vectors
@@ -404,13 +422,34 @@ class HeuristicEngine:
                     mutation_types=current_mutation_types.union(mutation_types),
                     mutation_vectors=current_mutation_vectors + (centroid_change,),
                 )
-                return MutatatedObject(
-                    set_id=set_id,
-                    input_object_id=i,
-                    output_object_id=o,
-                    mutation_types=mutation_types,
-                    centroid_change=centroid_change,
+                mutations.append(
+                    MutatatedObject(
+                        set_id=set_id,
+                        input_object_id=i,
+                        output_object_id=o,
+                        mutation_types=mutation_types,
+                        centroid_change=centroid_change,
+                        direction_vector=direction_vector,
+                    )
                 )
+        return mutations
+    
+    # def check_association_mutation_object_prop(
+    #         self, mutation_list: list[list[MutatatedObject]],
+    # ):
+    #     """
+    #     For all mutations gathered in the training data, check if there are any associations
+    #     between a mutation and a specific object property.
+    #     For example, only blue (colour=1) objects grow in direction (1, 0) in all sets. 
+    #     Or only closed objects change shape
+    #     """
+    #     mutation_association = {}
+    #     for set_mutations in mutation_list:
+    #         for mutation in set_mutations:
+
+
+                
+            
 
     # -----------------------------------------------------------------------------
     # Conserved properties analysis

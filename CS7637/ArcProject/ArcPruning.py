@@ -30,6 +30,7 @@ from ArcHeuristics import (
 class Require:
     SQUARE_GRID = "requires:square_grid"
     SPLIT_GRID = "requires:split_grid"
+    REMOVE_COLOURS = "requires:remove_colours"
 
 
 class Effect:
@@ -81,6 +82,9 @@ class PruningEngine:
             exclusion_tags.add(Require.SQUARE_GRID)
         if not heuristic_summary.split_grid:
             exclusion_tags.add(Require.SPLIT_GRID)
+        gd = heuristic_summary.grid_differences
+        if not any(grid_diff.removed_colours for grid_diff in gd):
+            exclusion_tags.add(Require.REMOVE_COLOURS)
         return exclusion_tags
 
     def prune_primitives(
@@ -116,7 +120,7 @@ class PruningEngine:
         )
         grid_diff: GridDifference = heuristic_summary.grid_differences
         object_diff: list[list[ObjectDifference]] = heuristic_summary.object_differences
-        mutations: list[MutatatedObject] = heuristic_summary.mutations
+        mutations: list[list[MutatatedObject]] = heuristic_summary.mutations
 
         relevance_mapping = {
             Effect.COLOUR: any(
@@ -144,7 +148,8 @@ class PruningEngine:
             )
             or any(
                 "growth" in mutation.mutation_types
-                for mutation in mutations
+                for mut_list in mutations
+                for mutation in mut_list
                 if mutation
             ),
             Effect.SHRINK: any(
@@ -152,7 +157,8 @@ class PruningEngine:
             )
             or any(
                 "shrink" in mutation.mutation_types
-                for mutation in mutations
+                for mut_list in mutations
+                for mutation in mut_list
                 if mutation
             ),
             Require.SPLIT_GRID: heuristic_summary.split_grid is not None,

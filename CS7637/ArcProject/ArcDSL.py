@@ -8,7 +8,6 @@ __date__ = "2026-06-10"
 __author__ = "NedeeshaWeerasuriya"
 __version__ = "0.1"
 
-
 import numpy as np
 import scipy.ndimage as ndi
 from ArcMemory import (
@@ -101,6 +100,42 @@ def logic_nor(array_list: list, fill_colour: int = 1) -> np.ndarray:
 #     return np.where(fill_mask, fill_colour, combined)
 
 
+@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+def logic_and_(array_list: list, fill_colour: int = 1) -> np.ndarray:
+    mask = np.logical_and.reduce([a != 0 for a in array_list])
+    return np.where(mask, fill_colour, 0)
+
+
+@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+def logic_or_(array_list: list, fill_colour: int = 1) -> np.ndarray:
+    mask = np.logical_or.reduce([a != 0 for a in array_list])
+    return np.where(mask, fill_colour, 0)
+
+
+@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+def logic_nand_(array_list: list, fill_colour: int = 1) -> np.ndarray:
+    mask = np.logical_and.reduce([a != 0 for a in array_list])
+    return np.where(mask, 0, fill_colour)
+
+
+@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+def logic_xor_(array_list: list) -> np.ndarray:
+    mask = np.logical_xor.reduce([a != 0 for a in array_list])
+    return np.where(mask, 1, 0)
+
+
+@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+def logic_nor_(array_list: list, fill_colour: int = 1) -> np.ndarray:
+    mask = np.logical_or.reduce([a != 0 for a in array_list])
+    return np.where(mask, 0, fill_colour)
+
+
+@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+def logic_xnor_(array_list: list, fill_colour: int = 1) -> np.ndarray:
+    mask = np.logical_xor.reduce([a != 0 for a in array_list])
+    return np.where(mask, 0, fill_colour)
+
+
 # -----------------------------------------------------------------------------
 # Grid level functions
 # -----------------------------------------------------------------------------
@@ -158,49 +193,46 @@ def change_colour(
 
 @grid_primitive(tags={Effect.COLOUR})
 def update_colour(
-    input_array: np.ndarray, new_colours: list[int], removed_colours: list[int]
+    input_array: np.ndarray, new_colours: int, removed_colours: int
 ) -> np.ndarray:
     """
     Update the colours in the input array by replacing the removed colours with the new colours.
     """
     grid = input_array.copy()
-    for old_colour, new_colour in zip(removed_colours, new_colours):
-        grid = np.where(grid == old_colour, new_colour, grid)
+    grid = np.where(grid == removed_colours, new_colours, grid)
     return grid
 
 
-@grid_primitive(tags={Effect.COLOUR})
-def remove_colours(input_array: np.ndarray, removed_colours: list[int]) -> np.ndarray:
+@grid_primitive(tags={Effect.COLOUR, Require.REMOVE_COLOURS})
+def remove_colours(input_array: np.ndarray, removed_colour_set: set[int]) -> np.ndarray:
     """
     Remove the specified colours from the input array by setting them to background colour 0.
     """
     grid = input_array.copy()
-    for colour in removed_colours:
+    for colour in removed_colour_set:
         grid = np.where(grid == colour, 0, grid)
     return grid
 
 
 @grid_primitive(tags={Effect.COLOUR})
-def change_background_colour(
-    input_array: np.ndarray, out_colour: set[int]
-) -> np.ndarray:
+def change_background_colour(input_array: np.ndarray, out_colour: int) -> np.ndarray:
     """
     Change the background colour of the input array to the new background colour.
     """
     grid = input_array.copy()
     current_background_colour = 0  # Assuming 0 is the current background colour
-    return np.where(grid == current_background_colour, list(out_colour)[0], grid)
+    return np.where(grid == current_background_colour, out_colour, grid)
 
 
-@grid_primitive(tags={Effect.COLOUR})
-def fill_default_colour(
-    input_array: np.ndarray, out_colour: set, default_colour: int = 1
-) -> np.ndarray:
-    """
-    Fill the input array with the specified out_colour where the default_colour is present.
-    """
-    grid = input_array.copy()
-    return np.where(grid == default_colour, list(out_colour)[0], grid)
+# @grid_primitive(tags={Effect.COLOUR})
+# def fill_default_colour(
+#     input_array: np.ndarray, out_colour: int, default_colour: int = 1
+# ) -> np.ndarray:
+#     """
+#     Fill the input array with the specified out_colour where the default_colour is present.
+#     """
+#     grid = input_array.copy()
+#     return np.where(grid == default_colour, out_colour, grid)
 
 
 @grid_primitive(tags={Effect.COLOUR})
@@ -234,25 +266,48 @@ def colour_grey_to_black(input_array: np.ndarray, grey: int = 5) -> np.ndarray:
 def connect_same_colour(input_array: np.ndarray) -> np.ndarray:
     """
     Connects any pixels of the same colour that are not connected by filling in the gaps between them.
-    Only connect in straight lines (horizontal, vertical, diagonal).
+    Only connect in straight lines (horizontal, vertical).
     """
     grid = input_array.copy()
-    unique_colours = np.unique(grid)
-    for colour in unique_colours:
-        if colour == 0:
-            continue
-        mask = grid == colour
-        # Fill horizontal gaps
-        for row in range(mask.shape[0]):
-            indices = np.where(mask[row, :])[0]
-            if len(indices) > 1:
-                grid[row, indices[0] : indices[-1] + 1] = colour
-        # Fill vertical gaps
-        for col in range(mask.shape[1]):
-            indices = np.where(mask[:, col])[0]
-            if len(indices) > 1:
-                grid[indices[0] : indices[-1] + 1, col] = colour
+    rows, cols = grid.shape
+
+    # Check horizontal
+    for row in range(rows):
+        colour_pixels = np.where(grid[row, :] != 0)[0]
+        # Check for two pixels of the same colour and connect them
+        if len(colour_pixels) > 1:
+            for i in range(len(colour_pixels) - 1):
+                start = colour_pixels[i]
+                end = colour_pixels[i + 1]
+                if grid[row, start] == grid[row, end]:
+                    grid[row, start : end + 1] = grid[row, start]
+
+    # Check vertical
+    for col in range(cols):
+        colour_pixels = np.where(grid[:, col] != 0)[0]
+        # Check for two pixels of the same colour and connect them
+        if len(colour_pixels) > 1:
+            for i in range(len(colour_pixels) - 1):
+                start = colour_pixels[i]
+                end = colour_pixels[i + 1]
+                if grid[start, col] == grid[end, col]:
+                    grid[start : end + 1, col] = grid[start, col]
     return grid
+
+
+@grid_primitive(tags={Effect.COLOUR})
+def fill_enclosed_area(
+    input_array: np.ndarray,
+    out_colour: int,
+) -> np.ndarray:
+    """
+    Fill any enclosed area of the input array with the specified colour.
+    """
+    binary_mask = input_array != 0
+    filled_mask = ndi.binary_fill_holes(binary_mask)
+    # Create a new array with the filled areas set to the specified colour
+    filled_array = np.where(filled_mask, out_colour, input_array)
+    return filled_array
 
 
 @grid_primitive(tags={Effect.GRID_SIZE})
@@ -333,6 +388,7 @@ def _update_object_state(obj: ObjectState, new_cell_positions: PixelSet) -> Obje
     return ObjectState(
         label_id=obj.label_id,
         colour=obj.colour,
+        grid_size=obj.grid_size,
         bounding_box=obj.bounding_box,
         centroid=obj.centroid,
         area=obj.area,
@@ -507,36 +563,39 @@ def shrink_object(
 @object_primitive(tags={Effect.GROWTH})
 def add_line_to_object(
     obj: ObjectState,
-    direction_vector: set[tuple[int, int]] = {(1, 0)},
-    scale: int = 3,
+    direction_vector: tuple[int, int],
 ) -> ObjectState:
     """
     Add a line to the object in the middle of the bounding box in the specified direction
-    Line should extent based on the scale factor (1 is 1 cell in the direction vector)
+    Line should extent to the edge of the grid in the specified direction
     Start from edge of the object in the direction of the line
     """
     cell_positions = obj.cell_positions
+    grid_shape = obj.grid_size
     # Get the edge of the object in the direction of the line
     edge_cells = set()
     for cell in cell_positions:
         x, y = cell
-        for dx, dy in direction_vector:
-            neighbor = (x + dx, y + dy)
-            if neighbor not in cell_positions:
-                edge_cells.add(cell)
-                break
+        dx, dy = direction_vector
+        neighbor = (x + dx, y + dy)
+        if neighbor not in cell_positions:
+            edge_cells.add(cell)
     new_cell_positions = set(cell_positions)
     for cell in edge_cells:
         x, y = cell
-        for dx, dy in direction_vector:
-            for s in range(1, scale + 1):
-                new_cell_positions.add((x + s * dx, y + s * dy))
+        dx, dy = direction_vector
+        for s in range(1, max(grid_shape)):
+            new_cell = (x + s * dx, y + s * dy)
+            if 0 <= new_cell[0] < grid_shape[0] and 0 <= new_cell[1] < grid_shape[1]:
+                new_cell_positions.add(new_cell)
+            else:
+                break
     return _update_object_state(obj, PixelSet(new_cell_positions))
 
 
 @object_primitive(tags={Effect.TRANSLATE})
 def translate_object(
-    obj: ObjectState, direction_vector: set[tuple[int, int]] = {(1, 0)}, scale: int = 1
+    obj: ObjectState, direction_vector: tuple[int, int] = (1, 0), scale: int = 1
 ) -> ObjectState:
     """
     Translate the object in the specified direction by the scale factor
@@ -545,6 +604,6 @@ def translate_object(
     new_cell_positions = set()
     for cell in cell_positions:
         x, y = cell
-        for dx, dy in direction_vector:
-            new_cell_positions.add((x + scale * dx, y + scale * dy))
+        dx, dy = direction_vector
+        new_cell_positions.add((x + scale * dx, y + scale * dy))
     return _update_object_state(obj, PixelSet(new_cell_positions))

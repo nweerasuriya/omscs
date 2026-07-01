@@ -14,6 +14,7 @@ from ArcMemory import ArcState
 from ArcHeuristics import HeuristicSummary
 
 ALL_DIRECTIONS = {(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)}
+COLOUR_SET = {0, 1, 2, 3, 4, 5, 6, 7, 8}
 
 
 def build_kwarg_pool(
@@ -36,6 +37,13 @@ def build_kwarg_pool(
             pool.setdefault("removed_colours", set()).update(
                 [c for c in gd.removed_colours]
             )
+            if gd.new_colours:
+                pool.setdefault("new_colour_set", set()).add(tuple(gd.new_colours))
+            if gd.removed_colours:
+                pool.setdefault("removed_colour_set", set()).add(
+                    tuple(gd.removed_colours)
+                )
+
         pool.setdefault("in_shape", set()).add(in_state.grid_state.dimensions)
         pool.setdefault("out_shape", set()).add(out_state.grid_state.dimensions)
 
@@ -66,6 +74,14 @@ def build_kwarg_pool(
             pool.setdefault("mutation_types", set()).update(in_obj.mutation_types)
             pool.setdefault("mutation_vectors", set()).update(in_obj.mutation_vectors)
 
+    # Mutation related parameters
+    for mut_list in hs.mutations:
+        for mut in mut_list:
+            pool.setdefault("direction_vector", set()).add(mut.direction_vector)
+
+    # TODO: Check if direction_vector is associated with other object properties
+    # (for example all objects with a certain colour are moving in the same direction)
+
     # Split related parameters
     if hs.split_grid:
         split_map = {direction for direction, active in hs.split_grid.items() if active}
@@ -75,7 +91,9 @@ def build_kwarg_pool(
     return pool
 
 
-def iter_relevant_kwargs(func: Callable, kwarg_pool: dict[str, list]) -> Iterator[dict[str, any]]:
+def iter_relevant_kwargs(
+    func: Callable, kwarg_pool: dict[str, list]
+) -> Iterator[dict[str, any]]:
     """
     Check which parameters are relevant for a given function.
     Iterate a list of possible parameter combinations from the pool.
@@ -85,23 +103,19 @@ def iter_relevant_kwargs(func: Callable, kwarg_pool: dict[str, list]) -> Iterato
     all_params = {**wrapper_params, **inner_params}
 
     relevant_kwargs = [k for k in all_params if k in kwarg_pool]
-    # Check for growth or shrinkage
-    if "direction_vector" in relevant_kwargs:
-        other_kwargs = [k for k in relevant_kwargs if k != "direction_vector"]
-        # Generate all combinations of other kwargs
-        other_kwarg_values = [kwarg_pool[k] for k in other_kwargs]
 
-        for direction in ALL_DIRECTIONS:
-            for other_combination in itertools.product(*other_kwarg_values):
-                kwarg_combo = {k: v for k, v in zip(other_kwargs, other_combination)}
-                kwarg_combo["direction_vector"] = direction
-                yield kwarg_combo
-    else:
-        # Generate all combinations of relevant kwargs
-        kwarg_values = [kwarg_pool[k] for k in relevant_kwargs]
-        for combination in itertools.product(*kwarg_values):
-            kwarg_combo = {k: v for k, v in zip(relevant_kwargs, combination)}
-            yield kwarg_combo
+    if not relevant_kwargs:
+        yield {}
+        return
+
+    kwarg_values = [kwarg_pool[k] for k in relevant_kwargs]
+    for combination in itertools.product(*kwarg_values):
+        kwarg_comb = dict(zip(relevant_kwargs, combination))
+        for kwarg, val in kwarg_comb.items():
+            if kwarg.endswith("_set") and isinstance(val, tuple):
+                kwarg_comb[kwarg] = set(val)
+        yield kwarg_comb
+
 
 def check_relevant_kwargs(func: callable, kwarg_pool: dict[str, list]) -> list[dict]:
     """
