@@ -17,6 +17,7 @@ __version__ = "0.1"
 import numpy as np
 import functools
 from dataclasses import dataclass, field
+from typing import Callable, Any
 from scipy import ndimage
 from skimage.measure import label, regionprops
 from helpers import get_grid_splits
@@ -30,6 +31,36 @@ PixelSet = frozenset[tuple[int, int]]
 HuMoments = tuple[float, float, float, float, float, float, float]
 Colour = int
 
+
+# -----------------------------------------------------------------------------
+# Data Classes
+# -----------------------------------------------------------------------------
+@dataclass(frozen=True)
+class PropertyKwarg:
+    """
+    Represents a kwarg which is conditioned on a specific property of an object.
+    """
+
+    object_property: str
+    mapping: tuple[tuple[Any, Any], ...]
+    support_score: float = 0.0
+    default_value: Any = None
+
+    def find_kwarg(self, object: "ObjectState") -> Any:
+        """
+        Given an object, find the corresponding kwarg value based on the mapping.
+        """
+        if hasattr(object, self.object_property):
+            value = getattr(object, self.object_property)
+            for prop_value, kwarg_value in self.mapping:
+                if prop_value == value:
+                    return kwarg_value
+        return self.default_value
+
+
+# -----------------------------------------------------------------------------
+# Decorators for DSL Primitives
+# -----------------------------------------------------------------------------
 
 GRID_PRIMITIVES: list[callable] = []
 OBJECT_PRIMITIVES: list[callable] = []
@@ -64,12 +95,18 @@ def object_primitive(func=None, *, tags=None):
     Decorator to apply a transformation directly to the object layer of an ArcState.
     """
 
+    def _resolve_object(val: Any, obj: "ObjectState") -> dict:
+        return val.find_kwarg(obj) if isinstance(val, PropertyKwarg) else val
+
     def decorator(inner_func):
         @functools.wraps(inner_func)
         def wrapper(state: ArcState, *args, **kwargs) -> ArcState:
-            transformed_objects = [
-                inner_func(obj, *args, **kwargs) for obj in state.objects
-            ]
+            transformed_objects = []
+            for obj in state.objects:
+                resolved_kwargs = {
+                    k: _resolve_object(v, obj) for k, v in kwargs.items()
+                }
+                transformed_objects.append(inner_func(obj, *args, **resolved_kwargs))
             # Update grid state based on transformed objects
             rows, cols = state.grid_state.dimensions
             grid = np.zeros((rows, cols), dtype=int)
@@ -380,14 +417,14 @@ class ObjectState:
         return not np.array_equal(mask, filled)
 
     @property
-    def is_block(self) -> bool:
+    def has_hole(self) -> bool:
         """
-        Check if the object is a solid block (no holes and filled inside)
+        Check if the object has a hole (not connected or has holes)
         Use binary_fill_holes to fill any holes and compare with the original mask.
-        If they are the same, then the object is a solid block.
+        If they are not the same, then the object has a hole.
         """
         filled_mask = ndimage.binary_fill_holes(self.mask)
-        return np.array_equal(self.mask, filled_mask)
+        return not np.array_equal(self.mask, filled_mask)
 
     @classmethod
     def from_regionprops(

@@ -513,57 +513,58 @@ def crop_object(obj: ObjectState) -> ObjectState:
     return _update_object_state(obj, PixelSet(new_cell_positions))
 
 
-@object_primitive(tags={Effect.GROWTH})
-def grow_object(
-    obj: ObjectState, scale: int = 1, direction_vector: set[tuple[int, int]] = {(0, 0)}
-) -> ObjectState:
-    """
-    Grow the object by scale factor.
-    If direction vector is provided, grow in that direction
-    """
-    if direction_vector != {(0, 0)}:
-        cell_positions = obj.cell_positions
-        new_cell_positions = set()
-        for cell in cell_positions:
-            x, y = cell
-            for dx in range(-scale, scale + 1):
-                for dy in range(-scale, scale + 1):
-                    if (dx, dy) in direction_vector:
-                        new_cell_positions.add((x + dx, y + dy))
-        return _update_object_state(obj, PixelSet(new_cell_positions))
-    else:
-        return obj
+# @object_primitive(tags={Effect.GROWTH, Require.DIRECTIONALITY})
+# def grow_object(
+#     obj: ObjectState, scale: int = 1, direction_vector: tuple[int, int] = (0, 0)
+# ) -> ObjectState:
+#     """
+#     Grow the object by scale factor.
+#     If direction vector is provided, grow in that direction
+#     """
+#     if direction_vector != {(0, 0)}:
+#         cell_positions = obj.cell_positions
+#         new_cell_positions = set()
+#         for cell in cell_positions:
+#             x, y = cell
+#             for dx in range(-scale, scale + 1):
+#                 for dy in range(-scale, scale + 1):
+#                     if (dx, dy) in direction_vector:
+#                         new_cell_positions.add((x + dx, y + dy))
+#         return _update_object_state(obj, PixelSet(new_cell_positions))
+#     else:
+#         return obj
 
 
-@object_primitive(tags={Effect.SHRINK})
-def shrink_object(
-    obj: ObjectState, scale: int = 1, direction_vector: set[tuple[int, int]] = {(0, 0)}
-) -> ObjectState:
-    """
-    Shrink the object by scale factor.
-    If direction vector is provided, shrink in that direction
-    """
-    if direction_vector != {(0, 0)}:
-        cell_positions = obj.cell_positions
-        new_cell_positions = set()
-        for cell in cell_positions:
-            x, y = cell
-            for dx in range(-scale, scale + 1):
-                for dy in range(-scale, scale + 1):
-                    if (dx, dy) in direction_vector and (
-                        x + dx,
-                        y + dy,
-                    ) in cell_positions:
-                        new_cell_positions.add((x + dx, y + dy))
-        return _update_object_state(obj, PixelSet(new_cell_positions))
-    else:
-        return obj
+# @object_primitive(tags={Effect.SHRINK})
+# def shrink_object(
+#     obj: ObjectState, scale: int = 1, direction_vector: tuple[int, int] = (0, 0)
+# ) -> ObjectState:
+#     """
+#     Shrink the object by scale factor.
+#     If direction vector is provided, shrink in that direction
+#     """
+#     if direction_vector != {(0, 0)}:
+#         cell_positions = obj.cell_positions
+#         new_cell_positions = set()
+#         for cell in cell_positions:
+#             x, y = cell
+#             for dx in range(-scale, scale + 1):
+#                 for dy in range(-scale, scale + 1):
+#                     if (dx, dy) in direction_vector and (
+#                         x + dx,
+#                         y + dy,
+#                     ) in cell_positions:
+#                         new_cell_positions.add((x + dx, y + dy))
+#         return _update_object_state(obj, PixelSet(new_cell_positions))
+#     else:
+#         return obj
 
 
-@object_primitive(tags={Effect.GROWTH})
+@object_primitive(tags={Effect.GROWTH, Require.DIRECTIONALITY})
 def add_line_to_object(
     obj: ObjectState,
-    direction_vector: tuple[int, int],
+    direction_vector: tuple[int, int] = (1, 0),
+    scale: int = 1,
 ) -> ObjectState:
     """
     Add a line to the object in the middle of the bounding box in the specified direction
@@ -584,7 +585,7 @@ def add_line_to_object(
     for cell in edge_cells:
         x, y = cell
         dx, dy = direction_vector
-        for s in range(1, max(grid_shape)):
+        for s in range(1, scale + 1):
             new_cell = (x + s * dx, y + s * dy)
             if 0 <= new_cell[0] < grid_shape[0] and 0 <= new_cell[1] < grid_shape[1]:
                 new_cell_positions.add(new_cell)
@@ -593,7 +594,7 @@ def add_line_to_object(
     return _update_object_state(obj, PixelSet(new_cell_positions))
 
 
-@object_primitive(tags={Effect.TRANSLATE})
+@object_primitive(tags={Effect.TRANSLATE, Require.DIRECTIONALITY})
 def translate_object(
     obj: ObjectState, direction_vector: tuple[int, int] = (1, 0), scale: int = 1
 ) -> ObjectState:

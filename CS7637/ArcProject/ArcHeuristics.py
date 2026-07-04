@@ -11,12 +11,19 @@ __version__ = "0.1"
 
 import numpy as np
 from dataclasses import dataclass, field
-from skimage.measure import label, regionprops
-from ArcMemory import ArcState, GridState, ObjectState
+from ArcMemory import ArcState, GridState, ObjectState, PixelSet
 from ArcSet import ArcSet
 
 HU_TOLERANCE = 1
+# Mutation Related Parameters
 MUTATION_TYPES = ["growth", "shrink", "shape_change", "translation"]
+ASSOCIATION_TYPES = [
+    "direction_vector",
+    "centroid_change",
+    "scale",
+]
+OBJECT_PROPERTIES = ["colour", "is_closed", "has_hole"]
+MIN_ASSOCIATION_SUPPORT = 2
 
 
 @dataclass
@@ -90,6 +97,19 @@ class MutatatedObject:
     mutation_types: list[str]
     direction_vector: tuple[int, int] = field(default_factory=lambda: (0, 0))
     centroid_change: tuple[float, float] = field(default_factory=lambda: (0.0, 0.0))
+    scale: int = 1
+
+
+@dataclass
+class PropertyAssociation:
+    """
+    Association between a mutation and a specific object property
+    """
+
+    kwarg: str
+    object_property: str
+    mapping: dict
+    support_score: float = 0.0
 
 
 @dataclass
@@ -117,6 +137,7 @@ class HeuristicSummary:
     object_differences: list[list[ObjectDifference]]
     mutations: list[list[MutatatedObject]]
     split_grid: dict[str, bool]
+    property_associations: list[PropertyAssociation] = field(default_factory=list)
 
 
 class HeuristicEngine:
@@ -178,12 +199,16 @@ class HeuristicEngine:
             grid_differences, object_differences
         )
 
+        # Object property associations with mutations
+        property_associations = self.infer_property_associations(mutation_list)
+
         return HeuristicSummary(
             conserved_properties=conserved_properties,
             grid_differences=grid_differences,
             object_differences=object_differences,
             mutations=mutation_list,
             split_grid=split_grid,
+            property_associations=property_associations,
         )
 
     # -----------------------------------------------------------------------------
@@ -340,6 +365,47 @@ class HeuristicEngine:
 
         return row_overlap and col_overlap
 
+    def mutation_scale(
+        self,
+        direction_vector: tuple[int, int],
+        centroid_change: tuple[float, float],
+        input_pixels: PixelSet,
+        output_pixels: PixelSet,
+        mutation_types: list[str],
+    ) -> float:
+        """
+        Determine the magnitude of change in the mutation based on the direction vector and centroid change.
+        1. Translation: Change in the centroid position of the object
+        2. Growth: Length of new pixels in the direction of the direction vector
+
+        Length of pixels is calculated as the number of new pixels in the direction of the direction vector.
+        Look for furthers point in original object in the direction of the direction vector and
+        compare with new pixels in the direction of the direction vector.
+        """
+
+        if "translation" in mutation_types:
+            scale = np.linalg.norm(centroid_change)
+
+        new_pixels = output_pixels - input_pixels
+        if not new_pixels:
+            scale = 0
+        else:
+            # Find the furthest point in the original object in the direction of the direction vector
+            furthest_point = max(
+                input_pixels,
+                key=lambda p: p[0] * direction_vector[0] + p[1] * direction_vector[1],
+            )
+            # Find the furthest point in the new pixels in the direction of the direction vector
+            furthest_new_point = max(
+                new_pixels,
+                key=lambda p: p[0] * direction_vector[0] + p[1] * direction_vector[1],
+            )
+            # Calculate the distance between the two points
+            scale = int(
+                np.linalg.norm(np.array(furthest_new_point) - np.array(furthest_point))
+            )
+        return scale
+
     def _check_object_mutations(
         self, set_id: int, input_state: ArcState, output_state: ArcState
     ) -> list[MutatatedObject]:
@@ -422,6 +488,16 @@ class HeuristicEngine:
                     mutation_types=current_mutation_types.union(mutation_types),
                     mutation_vectors=current_mutation_vectors + (centroid_change,),
                 )
+
+                # Determine scale of change
+                scale = self.mutation_scale(
+                    direction_vector,
+                    centroid_change,
+                    input_pixels,
+                    output_pixels,
+                    mutation_types,
+                )
+
                 mutations.append(
                     MutatatedObject(
                         set_id=set_id,
@@ -430,26 +506,72 @@ class HeuristicEngine:
                         mutation_types=mutation_types,
                         centroid_change=centroid_change,
                         direction_vector=direction_vector,
+                        scale=scale,
                     )
                 )
         return mutations
-    
-    # def check_association_mutation_object_prop(
-    #         self, mutation_list: list[list[MutatatedObject]],
-    # ):
-    #     """
-    #     For all mutations gathered in the training data, check if there are any associations
-    #     between a mutation and a specific object property.
-    #     For example, only blue (colour=1) objects grow in direction (1, 0) in all sets. 
-    #     Or only closed objects change shape
-    #     """
-    #     mutation_association = {}
-    #     for set_mutations in mutation_list:
-    #         for mutation in set_mutations:
 
+    def check_association_mutation_object_prop(
+        self,
+        mutation_list: list[list[MutatatedObject]],
+        obj_property: str,
+        kwarg: str,
+    ) -> PropertyAssociation:
+        """
+        For all mutations gathered in the training data, check if there are any associations
+        between a mutation and a specific object property.
+        For example, only blue (colour=1) objects grow in direction (1, 0) in all sets.
+        Or only closed objects change shape
+        Check for conservation across training sets
+        """
+        ignore_values = {None, 0, (0, 0), (0.0, 0.0)}
+        mapping = {}
+        num_sets = 0
+        for set_mutations in mutation_list:
+            for mutation in set_mutations:
+                # Get the input object from the state cache
+                input_object = self.state_cache[mutation.set_id]["input"].objects[
+                    mutation.input_object_id
+                ]
+                # Check if the object property is present in the input object
+                if hasattr(input_object, obj_property):
+                    prop_value = getattr(input_object, obj_property)
+                    # Read the kwarg value from the mutation object
+                    kwarg_value = getattr(mutation, kwarg)
+                    if kwarg_value in ignore_values:
+                        continue
+                    if prop_value not in mapping:
+                        mapping[prop_value] = set()
+                    mapping[prop_value].add(kwarg_value)
+                    num_sets += 1
+        return PropertyAssociation(
+            kwarg=kwarg,
+            object_property=obj_property,
+            mapping=mapping,
+            support_score=num_sets,
+        )
 
-                
-            
+    def infer_property_associations(
+        self, mutation_list: list[list[MutatatedObject]]
+    ) -> list[PropertyAssociation]:
+        """
+        Check if the property associations are valid and return a list of PropertyAssociation objects.
+        """
+        associations = []
+        for obj_property in OBJECT_PROPERTIES:
+            for kwarg in ASSOCIATION_TYPES:
+                association = self.check_association_mutation_object_prop(
+                    mutation_list, obj_property, kwarg
+                )
+                # Check each prop value maps to a single kwarg
+                if any(len(values) > 1 for values in association.mapping.values()):
+                    continue
+                if (
+                    association.support_score >= MIN_ASSOCIATION_SUPPORT
+                    and association.mapping
+                ):
+                    associations.append(association)
+        return associations
 
     # -----------------------------------------------------------------------------
     # Conserved properties analysis

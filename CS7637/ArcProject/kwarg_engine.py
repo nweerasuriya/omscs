@@ -10,7 +10,7 @@ import inspect
 import itertools
 from typing import Callable, Iterator
 import numpy as np
-from ArcMemory import ArcState
+from ArcMemory import ArcState, PropertyKwarg
 from ArcHeuristics import HeuristicSummary
 
 ALL_DIRECTIONS = {(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)}
@@ -78,9 +78,18 @@ def build_kwarg_pool(
     for mut_list in hs.mutations:
         for mut in mut_list:
             pool.setdefault("direction_vector", set()).add(mut.direction_vector)
+            pool.setdefault("scale", set()).add(mut.scale)
 
     # TODO: Check if direction_vector is associated with other object properties
     # (for example all objects with a certain colour are moving in the same direction)
+    for prop_assoc in hs.property_associations:
+        mapping_dict = {k: next(iter(v)) for k, v in prop_assoc.mapping.items()}
+        property_kwarg = PropertyKwarg(
+            object_property=prop_assoc.object_property,
+            mapping=tuple(mapping_dict.items()),
+            support_score=prop_assoc.support_score,
+        )
+        pool.setdefault("property_associations", set()).add(property_kwarg)
 
     # Split related parameters
     if hs.split_grid:

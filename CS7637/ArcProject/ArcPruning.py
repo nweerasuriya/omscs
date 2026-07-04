@@ -31,6 +31,7 @@ class Require:
     SQUARE_GRID = "requires:square_grid"
     SPLIT_GRID = "requires:split_grid"
     REMOVE_COLOURS = "requires:remove_colours"
+    DIRECTIONALITY = "requires:directionality"
 
 
 class Effect:
@@ -85,6 +86,10 @@ class PruningEngine:
         gd = heuristic_summary.grid_differences
         if not any(grid_diff.removed_colours for grid_diff in gd):
             exclusion_tags.add(Require.REMOVE_COLOURS)
+        # Remove some dsl if no mutations are present
+        if len(heuristic_summary.mutations) == 0:
+            exclusion_tags.add(Require.DIRECTIONALITY)
+
         return exclusion_tags
 
     def prune_primitives(

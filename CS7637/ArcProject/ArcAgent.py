@@ -1,18 +1,48 @@
 import numpy as np
-from typing import Callable
+from typing import Callable, Optional, Tuple, List
 from ArcSet import ArcSet
 from ArcProblem import ArcProblem
 from ArcHeuristics import HeuristicEngine, HeuristicSummary
 from ArcPruning import PruningEngine
-from ArcSearch import breadth_first_search
+from MCTS_Engine import MCTSResult, MCTSNode, MCTSEngine
+from ArcSearch import ArcSearch, BoundTransformation
 from ArcMemory import (
     ArcState,
     GRID_PRIMITIVES,
     OBJECT_PRIMITIVES,
     SPLIT_GRID_PRIMITIVES,
 )
-from kwarg_engine import build_kwarg_pool, check_relevant_kwargs
+from kwarg_engine import build_kwarg_pool, iter_relevant_kwargs
 from ArcDSL import *
+
+
+def run_mcts_engine(
+    sorted_primitives: list[Tuple[Callable, float]],
+    kwarg_pool: dict[str, list],
+    training_data: list[ArcSet],
+) -> MCTSResult:
+    """
+    Run the MCTS search engine to find best transformations
+    """
+    problem = ArcSearch(
+        sorted_primitives=sorted_primitives,
+        kwarg_pool=kwarg_pool,
+        training_data=training_data,
+        iter_relevant_kwargs=iter_relevant_kwargs,
+        state_from_array=ArcState.from_array,
+        state_to_array=lambda state: state.grid_state.as_array,
+    )
+    root_node = MCTSNode(problem=problem, state=problem._input_state, depth=0)
+    mcts_engine = MCTSEngine(root_node=root_node, iterations=500)
+    mcts_engine.search()
+    if not root_node.children:
+        return MCTSResult(program=[], reward=0)
+    best_program, best_node = mcts_engine.best_action()
+    ranked_hypotheses: dict[tuple[Callable, ...], int] = {}
+    ranked_hypotheses[tuple(best_program)] = best_node.best_reward
+    return MCTSResult(
+        program=best_program, reward=best_node.best_reward, problem=problem
+    )
 
 
 class ArcAgent:
@@ -26,22 +56,21 @@ class ArcAgent:
         heuristic_summary: HeuristicSummary,
         weighted_primitives: dict[Callable, float],
         training_data: list[ArcSet],
-    ):
+    ) -> MCTSResult:
         """
         Test the generated hypotheses on the training data and rank them based on performance.
+        Return a list of hypotheses, their associated kwargs, sorted by their performance score.
         """
         sorted_primitives = sorted(
             weighted_primitives.items(), key=lambda x: x[1], reverse=True
         )
         kwarg_pool = build_kwarg_pool(self.heuristics.state_cache, heuristic_summary)
-        ranked_hypotheses = breadth_first_search(
-            sorted_primitives, kwarg_pool, training_data
-        )
+        # ranked_hypotheses = breadth_first_search(
+        #     sorted_primitives, kwarg_pool, training_data
+        # )
+        mcts_result = run_mcts_engine(sorted_primitives, kwarg_pool, training_data)
 
-        ranked_final = sorted(
-            ranked_hypotheses.items(), key=lambda x: x[1], reverse=True
-        )
-        return ranked_final
+        return mcts_result
 
     def make_predictions(self, arc_problem: ArcProblem) -> list[np.ndarray]:
         """
@@ -71,22 +100,11 @@ class ArcAgent:
                 GRID_PRIMITIVES + OBJECT_PRIMITIVES + SPLIT_GRID_PRIMITIVES,
             )
         )
-        ranked_hypotheses = self.test_hypotheses(
+        mcts_result = self.test_hypotheses(
             heuristic_summary, weighted_primitives, arc_problem.training_set()
         )
 
-        kwarg_pool = build_kwarg_pool(self.heuristics.state_cache, heuristic_summary)
+        prediction = mcts_result.predict(input_test.data())
+        predictions.append(prediction)
 
-        input_state = ArcState.from_array(input_test.data(), extract_objects=True)
-        # Add top 3 hypotheses predictions to the predictions list
-        for h, score in ranked_hypotheses[:3]:
-            input_state = ArcState.from_array(input_test.data(), extract_objects=True)
-            try:
-                for fn in h:
-                    kwargs = check_relevant_kwargs(fn, kwarg_pool)
-                    input_state = fn(input_state, **kwargs)
-                predictions.append(input_state.grid_state.as_array)
-            except Exception as e:
-                print(f"Error applying hypothesis {h}: {e}")
-                continue
         return predictions
