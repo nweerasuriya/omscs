@@ -31,8 +31,9 @@ class DefaultSearchParams:
 
     error_weight: float = 1.0
     complexity_weight: float = 0.1
-    exploration_constant: float = math.sqrt(2)
-    search_depth: int = 7
+    exploration_constant: float = np.sqrt(2)
+    search_depth: int = 10
+    widening_factor: int = 2
 
 
 DEFAULT_PARAMS = DefaultSearchParams()
@@ -56,7 +57,7 @@ class MCTSNode:
     def __init__(
         self,
         problem: ArcSearch,
-        state: ArcState,
+        state: tuple[ArcState],
         action: Optional[Callable] = None,
         prior: Optional[float] = None,
         parent: Optional["MCTSNode"] = None,
@@ -81,6 +82,8 @@ class MCTSNode:
         self._reward = None
         self._unvisited_actions = None
 
+        self.skip_log = []
+
     @property
     def n_visits(self) -> int:
         return self.visits
@@ -96,6 +99,15 @@ class MCTSNode:
             if self.unvisited_actions is not None
             else True
         )
+
+    @property
+    def can_expand(self) -> bool:
+        if not self.unvisited_actions:
+            return False
+        # # Widen the search if the node has been visited a lot
+        # limit = self.params.widening_factor * ((self.visits + 1) ** 0.5)
+        # return len(self.children) < limit
+        return True
 
     @property
     def unvisited_actions(self):
@@ -128,6 +140,17 @@ class MCTSNode:
             self.depth >= self.params.search_depth
             or self.problem.is_solved(self.state)
             or (len(self.unvisited_actions) == 0 and not self.children)
+        )
+
+    def _same_state(self, a, b) -> bool:
+        """
+        Check if two states are the same by comparing their array representations.
+        """
+        return all(
+            np.array_equal(
+                self.problem.state_to_array(sa), self.problem.state_to_array(sb)
+            )
+            for sa, sb in zip(a, b)
         )
 
     def puct(self) -> float:
@@ -180,6 +203,14 @@ class MCTSNode:
                     f"Error applying transformation {action.__name__} at depth {self.depth}: {e}"
                 )
                 continue
+            name = action.transformation.__name__
+            if new_state is None:
+                self.skip_log.append((name, "No new state generated"))
+                continue
+            if self._same_state(new_state, self.state):
+                self.skip_log.append((name, "State unchanged"))
+                continue
+            self.skip_log.append((name, "Expanded"))
             child_node = MCTSNode(
                 problem=self.problem,
                 state=new_state,
@@ -231,6 +262,7 @@ class MCTSEngine:
     ):
         self.root_node = root_node
         self.iterations = iterations
+        self.solved_node = None
 
     def search(self):
         """
@@ -242,7 +274,8 @@ class MCTSEngine:
                 continue
             reward = leaf_node.evaluate()
             leaf_node.backpropagate(reward)
-            if leaf_node.problem.is_solved(leaf_node.state):
+            if reward == 1.0:
+                self.solved_node = leaf_node
                 break
 
     def tree_policy(self, node: MCTSNode) -> MCTSNode:
@@ -251,8 +284,12 @@ class MCTSEngine:
         """
         current_node = node
         while not current_node.is_terminal():
-            if not current_node.is_fully_expanded:
-                return current_node.expand()
+            if current_node.can_expand:
+                child = current_node.expand()
+                if child is not None:
+                    return child
+            if not current_node.children:
+                return current_node
             current_node = current_node.select_child()
         return current_node
 
@@ -261,9 +298,33 @@ class MCTSEngine:
         Return the best actions from the root node after MCTS search.
         Find the highest reward node with ties broken by number of visits.
         """
-        node = self.root_node
-        while node.children:
-            node = max(
-                node.children, key=lambda child: (child.best_reward, child.visits)
+        if self.solved_node is not None:
+            print(
+                f"Best program found with reward {self.solved_node.best_reward:.4f} and visits {self.solved_node.visits}"
             )
-        return node.program(), node
+            return self.solved_node.program(), self.solved_node
+
+        # Find the child node with the highest reward, breaking ties by depth
+        best_node = self.root_node
+        stack = [self.root_node]
+        while stack:
+            node = stack.pop()
+            if (
+                node.best_reward > best_node.best_reward
+                or (
+                    node.best_reward == best_node.best_reward
+                    and node.depth <= best_node.depth
+                )
+                or best_node == self.root_node
+            ):
+                best_node = node
+            stack.extend(node.children)
+
+        # best_node.problem.candidate_report("fill_overlap_with_original_grid")
+        print(
+            f"Best program found with reward {best_node.best_reward:.4f} and visits {best_node.visits}"
+        )
+        # print("Input State:", best_node.state[0].grid_state.as_array)
+        # print("Output State:", best_node.state[-1].grid_state.as_array)
+        # print("Log for best node", best_node.skip_log)
+        return best_node.program(), best_node

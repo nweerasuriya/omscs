@@ -5,14 +5,23 @@ from ArcProblem import ArcProblem
 from ArcHeuristics import HeuristicEngine, HeuristicSummary
 from ArcPruning import PruningEngine
 from MCTS_Engine import MCTSResult, MCTSNode, MCTSEngine
-from ArcSearch import ArcSearch, BoundTransformation
-from ArcMemory import (
-    ArcState,
+from ArcSearch import (
+    ArcSearch,
+    BoundTransformation,
+    breadth_first_search,
+)
+from ArcMemory import ArcState
+from MemoryDecorators import (
+    RELATIONAL_PRIMITIVES,
     GRID_PRIMITIVES,
     OBJECT_PRIMITIVES,
     SPLIT_GRID_PRIMITIVES,
 )
-from kwarg_engine import build_kwarg_pool, iter_relevant_kwargs
+from kwarg_engine import (
+    build_kwarg_pool,
+    iter_relevant_kwargs,
+    prune_primitives_required_kwargs,
+)
 from ArcDSL import *
 
 
@@ -33,7 +42,7 @@ def run_mcts_engine(
         state_to_array=lambda state: state.grid_state.as_array,
     )
     root_node = MCTSNode(problem=problem, state=problem._input_state, depth=0)
-    mcts_engine = MCTSEngine(root_node=root_node, iterations=500)
+    mcts_engine = MCTSEngine(root_node=root_node, iterations=1000)
     mcts_engine.search()
     if not root_node.children:
         return MCTSResult(program=[], reward=0)
@@ -61,14 +70,31 @@ class ArcAgent:
         Test the generated hypotheses on the training data and rank them based on performance.
         Return a list of hypotheses, their associated kwargs, sorted by their performance score.
         """
+        kwarg_pool = build_kwarg_pool(self.heuristics.state_cache, heuristic_summary)
+        pruned_primitives = prune_primitives_required_kwargs(
+            [primitive for primitive, _ in weighted_primitives.items()], kwarg_pool
+        )
+        # Keep pruned primitives from weighted_primitives
+        weighted_primitives = {
+            primitive: weight
+            for primitive, weight in weighted_primitives.items()
+            if primitive in pruned_primitives
+        }
         sorted_primitives = sorted(
             weighted_primitives.items(), key=lambda x: x[1], reverse=True
         )
-        kwarg_pool = build_kwarg_pool(self.heuristics.state_cache, heuristic_summary)
+        # print(
+        #     f"All Primitives: {[p.__name__ + ' weight: ' + str(weight) for p, weight in weighted_primitives.items()]}"
+        # )
         # ranked_hypotheses = breadth_first_search(
         #     sorted_primitives, kwarg_pool, training_data
         # )
+        # print("Ranked Hypotheses: " + str(ranked_hypotheses))
         mcts_result = run_mcts_engine(sorted_primitives, kwarg_pool, training_data)
+        print(
+            "Final Primitives: "
+            + str([p.transformation.__name__ for p in mcts_result.program])
+        )
 
         return mcts_result
 
@@ -97,7 +123,10 @@ class ArcAgent:
         pruned_primitives, weighted_primitives = (
             self.pruning_engine.generate_candidate_primitives(
                 heuristic_summary,
-                GRID_PRIMITIVES + OBJECT_PRIMITIVES + SPLIT_GRID_PRIMITIVES,
+                GRID_PRIMITIVES
+                + OBJECT_PRIMITIVES
+                + SPLIT_GRID_PRIMITIVES
+                + RELATIONAL_PRIMITIVES,
             )
         )
         mcts_result = self.test_hypotheses(
@@ -105,6 +134,7 @@ class ArcAgent:
         )
 
         prediction = mcts_result.predict(input_test.data())
+
         predictions.append(prediction)
 
         return predictions

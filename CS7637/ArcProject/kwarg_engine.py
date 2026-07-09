@@ -8,14 +8,67 @@ __version__ = "0.1"
 
 import inspect
 import itertools
-from typing import Callable, Iterator
-import numpy as np
-from ArcMemory import ArcState, PropertyKwarg
+from typing import Callable, Iterator, Any
+from dataclasses import dataclass
+from ArcMemory import (
+    ArcState,
+    ObjectState,
+)
 from ArcHeuristics import HeuristicSummary
+from ArcRelations import RelationalGraph, collect_relation_scores, add_relational_kwargs
+from helpers import ALL_DIRECTIONS, COLOUR_SET
 
-ALL_DIRECTIONS = {(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)}
-COLOUR_SET = {0, 1, 2, 3, 4, 5, 6, 7, 8}
+# -----------------------------------------------------------------------------
+# Data Classes
+# -----------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class SetSpecificKwarg:
+    def resolve(self, original_state: "ArcState") -> Any:
+        raise NotImplementedError()
+
+
+@dataclass(frozen=True)
+class OriginalGridKwarg(SetSpecificKwarg):
+    def resolve(self, original_state: "ArcState") -> Any:
+        return original_state.grid_state
+
+
+@dataclass(frozen=True)
+class BackgroundColourKwarg(SetSpecificKwarg):
+    def resolve(self, original_state: "ArcState") -> Any:
+        return original_state.grid_state.background_colour
+    
+ORIGINAL_GRID_KWARG = OriginalGridKwarg()
+BACKGROUND_COLOUR_KWARG = BackgroundColourKwarg()
+
+
+@dataclass(frozen=True)
+class PropertyKwarg:
+    """
+    Represents a kwarg which is conditioned on a specific property of an object.
+    """
+
+    object_property: str
+    mapping: tuple[tuple[Any, Any], ...]
+    support_score: float = 0.0
+    default_value: Any = None
+
+    def resolve_for_object(self, obj: "ObjectState", graph=None) -> Any:
+        """
+        Given an object, find the corresponding kwarg value based on the mapping.
+        """
+        if hasattr(obj, self.object_property):
+            value = getattr(obj, self.object_property)
+            for prop_value, kwarg_value in self.mapping:
+                if prop_value == value:
+                    return kwarg_value
+        return self.default_value
+    
+
+# -----------------------------------------------------------------------------
+# Keyword Argument Engine
+# -----------------------------------------------------------------------------
 
 def build_kwarg_pool(
     state_cache: dict[int, dict[str, ArcState]], hs: HeuristicSummary
@@ -24,6 +77,15 @@ def build_kwarg_pool(
     Get all possible parameter values from the Heuristic Summary which will be used by the DSL primitives.
     """
     pool: dict[str, set] = {}
+
+    # General parameters
+    pool.setdefault("quarter_turn", set()).update({1, 2, 3})
+    pool.setdefault("direction_str", set()).update(
+        {"horizontal", "vertical", "diagonal", "anti-diagonal"}
+    )
+    # Set default parameters that will be updated
+    pool.setdefault("original_grid", set()).add(ORIGINAL_GRID_KWARG)
+    pool.setdefault("background_colour", set()).add(BACKGROUND_COLOUR_KWARG)
 
     # Grid related parameters
     for gd in hs.grid_differences:
@@ -48,13 +110,12 @@ def build_kwarg_pool(
         pool.setdefault("out_shape", set()).add(out_state.grid_state.dimensions)
 
     # Object related parameters
-    for obj_diff_list in hs.object_differences:
-        for od in obj_diff_list:
-            in_state = state_cache[od.set_id]["input"]
-            in_id, out_id = od.object_id
-            in_obj = in_state.objects[in_id]
-            out_state = state_cache[od.set_id]["output"]
-            out_obj = out_state.objects[out_id]
+    for obj_list in hs.object_transformations:
+        for od in obj_list:
+            in_state: ArcState = state_cache[od.set_id]["input"]
+            in_obj: ObjectState = in_state.objects[od.input_object_id]
+            out_state: ArcState = state_cache[od.set_id]["output"]
+            out_obj: ObjectState = out_state.objects[od.output_object_id]
 
             # Shape related parameters
             pool.setdefault("obj_in_shape", set()).add(in_obj.area)
@@ -71,17 +132,13 @@ def build_kwarg_pool(
             pool.setdefault("obj_colours", set()).add((in_obj.colour, out_obj.colour))
 
             # Mutation related parameters
-            pool.setdefault("mutation_types", set()).update(in_obj.mutation_types)
-            pool.setdefault("mutation_vectors", set()).update(in_obj.mutation_vectors)
+            # pool.setdefault("mutation_types", set()).update(od.mutation_types)
+            pool.setdefault("direction_vector", set()).add(od.direction_vector)
+            pool.setdefault("scale", set()).add(od.scale)
 
-    # Mutation related parameters
-    for mut_list in hs.mutations:
-        for mut in mut_list:
-            pool.setdefault("direction_vector", set()).add(mut.direction_vector)
-            pool.setdefault("scale", set()).add(mut.scale)
-
-    # TODO: Check if direction_vector is associated with other object properties
+    # Check if direction_vector is associated with other object properties
     # (for example all objects with a certain colour are moving in the same direction)
+    # print(f"Property Associations: {hs.property_associations}")
     for prop_assoc in hs.property_associations:
         mapping_dict = {k: next(iter(v)) for k, v in prop_assoc.mapping.items()}
         property_kwarg = PropertyKwarg(
@@ -89,7 +146,13 @@ def build_kwarg_pool(
             mapping=tuple(mapping_dict.items()),
             support_score=prop_assoc.support_score,
         )
-        pool.setdefault("property_associations", set()).add(property_kwarg)
+        pool.setdefault(prop_assoc.kwarg, set()).add(property_kwarg)
+
+    # Relational parameters
+    relational_scores = collect_relation_scores(
+        state_cache, hs.object_transformations
+    )
+    add_relational_kwargs(pool, relational_scores)
 
     # Split related parameters
     if hs.split_grid:
@@ -100,6 +163,35 @@ def build_kwarg_pool(
     return pool
 
 
+def required_kwargs(func: Callable) -> set[str]:
+    """
+    Get the required keyword arguments for a given function that must be provided to run.
+    """
+    sig = inspect.signature(func, follow_wrapped=True)
+    params = list(sig.parameters.values())
+    required_params = set()
+    for param in params[1:]:
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+        if param.default is inspect.Parameter.empty:
+            required_params.add(param.name)
+    return required_params
+
+
+def prune_primitives_required_kwargs(
+    primitives: list[Callable], kwarg_pool: dict[str, list]
+) -> list[Callable]:
+    """
+    Prune the list of primitives based on the required keyword arguments and the available kwarg pool.
+    """
+    pruned_primitives = []
+    for primitive in primitives:
+        required_params = required_kwargs(primitive)
+        if all(param in kwarg_pool for param in required_params):
+            pruned_primitives.append(primitive)
+    return pruned_primitives
+
+
 def iter_relevant_kwargs(
     func: Callable, kwarg_pool: dict[str, list]
 ) -> Iterator[dict[str, any]]:
@@ -107,6 +199,11 @@ def iter_relevant_kwargs(
     Check which parameters are relevant for a given function.
     Iterate a list of possible parameter combinations from the pool.
     """
+    # check if all required kwargs are present in the kwarg pool
+    check_requirement = all(kwarg_pool.get(name) for name in required_kwargs(func))
+    if not check_requirement:
+        return
+
     wrapper_params = inspect.signature(func, follow_wrapped=False).parameters
     inner_params = inspect.signature(func, follow_wrapped=True).parameters
     all_params = {**wrapper_params, **inner_params}

@@ -17,14 +17,14 @@ __version__ = "0.1"
 import numpy as np
 from typing import Callable
 
-from ArcMemory import GRID_PRIMITIVES, OBJECT_PRIMITIVES, GridState
+from MemoryDecorators import GRID_PRIMITIVES, OBJECT_PRIMITIVES
 from ArcHeuristics import (
     ConservedAllSets,
     GridDifference,
     HeuristicSummary,
-    MutatatedObject,
-    ObjectDifference,
+    ObjectTransformation,
 )
+from kwarg_engine import required_kwargs
 
 
 class Require:
@@ -86,9 +86,9 @@ class PruningEngine:
         gd = heuristic_summary.grid_differences
         if not any(grid_diff.removed_colours for grid_diff in gd):
             exclusion_tags.add(Require.REMOVE_COLOURS)
-        # Remove some dsl if no mutations are present
-        if len(heuristic_summary.mutations) == 0:
-            exclusion_tags.add(Require.DIRECTIONALITY)
+        # # Remove some dsl if no mutations are present
+        # if len(heuristic_summary.object_transformations) == 0:
+        #     exclusion_tags.add(Require.DIRECTIONALITY)
 
         return exclusion_tags
 
@@ -104,12 +104,13 @@ class PruningEngine:
         exclusion_tags = self._get_exclusion_tags(
             conserved_properties, heuristic_summary
         )
-        pruned_primitives = []
+        unpruned_primitives = []
         for primitive in primitives:
             primitive_tags = getattr(primitive, "tags", set())
             if primitive_tags.intersection(exclusion_tags):
-                pruned_primitives.append(primitive)
-        return pruned_primitives
+                continue
+            unpruned_primitives.append(primitive)
+        return unpruned_primitives
 
     # TODO: Improve weighting system
     def create_weights(
@@ -123,64 +124,69 @@ class PruningEngine:
         excluded_tags = self._get_exclusion_tags(
             heuristic_summary.conserved_properties, heuristic_summary
         )
-        grid_diff: GridDifference = heuristic_summary.grid_differences
-        object_diff: list[list[ObjectDifference]] = heuristic_summary.object_differences
-        mutations: list[list[MutatatedObject]] = heuristic_summary.mutations
+        grid_diff: list[GridDifference] = heuristic_summary.grid_differences
+        object_tran: list[list[ObjectTransformation]] = (
+            heuristic_summary.object_transformations
+        )
 
         relevance_mapping = {
-            Effect.COLOUR: any(
-                grid_diff.colour_changed
-                for grid_diff in heuristic_summary.grid_differences
-            )
-            or any(obj.colour_changed for obj_list in object_diff for obj in obj_list),
+            Effect.COLOUR: any(gd.colour_changed for gd in grid_diff)
+            or any(obj.colour_changed for obj_list in object_tran for obj in obj_list),
             Effect.SHAPE: any(
-                obj.shape_changed for obj_list in object_diff for obj in obj_list
+                obj.shape_changed for obj_list in object_tran for obj in obj_list
             ),
             Effect.GRID_SIZE: any(
-                grid_diff.input_shape != grid_diff.output_shape
-                for grid_diff in heuristic_summary.grid_differences
+                gd.input_shape != gd.output_shape for gd in grid_diff
             ),
-            Effect.OBJECT_COUNT: any(
-                grid_diff.object_count_changed
-                for grid_diff in heuristic_summary.grid_differences
-            ),
-            Effect.SYMMETRY: any(
-                grid_diff.symmetry_changed
-                for grid_diff in heuristic_summary.grid_differences
-            ),
+            Effect.OBJECT_COUNT: any(gd.object_count_changed for gd in grid_diff),
+            Effect.SYMMETRY: any(gd.symmetry_changed for gd in grid_diff),
             Effect.GROWTH: any(
-                obj.size_changed for obj_list in object_diff for obj in obj_list
+                obj.size_changed for obj_list in object_tran for obj in obj_list
             )
             or any(
-                "growth" in mutation.mutation_types
-                for mut_list in mutations
-                for mutation in mut_list
-                if mutation
+                "growth" in obj.mutation_types
+                for obj_list in object_tran
+                for obj in obj_list
             ),
             Effect.SHRINK: any(
-                obj.size_changed for obj_list in object_diff for obj in obj_list
+                obj.size_changed for obj_list in object_tran for obj in obj_list
             )
             or any(
-                "shrink" in mutation.mutation_types
-                for mut_list in mutations
-                for mutation in mut_list
-                if mutation
+                "shrink" in obj.mutation_types
+                for obj_list in object_tran
+                for obj in obj_list
             ),
             Require.SPLIT_GRID: heuristic_summary.split_grid is not None,
+            Require.REMOVE_COLOURS: any(gd.removed_colours for gd in grid_diff),
+            Require.DIRECTIONALITY: any(
+                "directional" in obj.mutation_types
+                for obj_list in object_tran
+                for obj in obj_list
+            ),
+            Require.SQUARE_GRID: heuristic_summary.conserved_properties.all_square_grid,
         }
+
+        UNKNOWN = 0.5
+        UNTAGGED = 0.5
+        BASE_WEIGHT = 0.1
+
         weights = {}
         for primitive in primitives:
             primitive_tags = getattr(primitive, "tags", set())
             if primitive_tags.intersection(excluded_tags):
-                weights[primitive] = 0
-            else:
-                relevance_score = sum(
-                    relevance_mapping.get(tag, 0.5) for tag in primitive_tags
-                )
-                if relevance_score > 0:
-                    relevance_score = relevance_score / len(primitive_tags)
-
-                weights[primitive] = relevance_score
+                weights[primitive] = 0.0
+                continue
+            #weights[primitive] = 0.5
+            if not primitive_tags:
+                weights[primitive] = UNTAGGED
+                continue
+            score = 0.0
+            for tag in primitive_tags:
+                if tag in relevance_mapping:
+                    score += 1.0 if relevance_mapping[tag] else BASE_WEIGHT
+                else:
+                    score += UNKNOWN
+            weights[primitive] = max(score / len(primitive_tags), BASE_WEIGHT)
         return weights
 
     def generate_candidate_primitives(
@@ -191,13 +197,13 @@ class PruningEngine:
         Return pruned list and weighted list of primitives.
         """
         weights = self.create_weights(heuristic_summary, primitives)
-        pruned_primitives = self.prune_primitives(
+        unpruned_primitives = self.prune_primitives(
             heuristic_summary.conserved_properties, heuristic_summary, primitives
         )
         # remove pruned primitives from weights
         weights = {
             primitive: weight
             for primitive, weight in weights.items()
-            if primitive not in pruned_primitives
+            if primitive in unpruned_primitives
         }
-        return pruned_primitives, weights
+        return unpruned_primitives, weights

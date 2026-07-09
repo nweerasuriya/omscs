@@ -7,7 +7,39 @@ __author__ = "NedeeshaWeerasuriya"
 __version__ = "0.1"
 
 
+from typing import Optional
+
 import numpy as np
+from scipy.spatial import distance
+
+# Enums
+ALL_DIRECTIONS = {(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)}
+COLOUR_SET = {0, 1, 2, 3, 4, 5, 6, 7, 8}
+
+
+def determine_new_obj_props(array: np.ndarray, centroid: tuple[float, float]):
+    """
+    Determine the new centroid and cell positions of an object after a transformation.
+    """
+    coords = np.array(np.where(array))
+    if coords.size == 0:
+        return set()
+    new_centroid = (np.mean(coords[0]), np.mean(coords[1]))
+    new_pixels = {
+        (
+            round(coord[0] + centroid[0] - new_centroid[0]),
+            round(coord[1] + centroid[1] - new_centroid[1]),
+        )
+        for coord in zip(*coords)
+    }
+    return new_pixels
+
+
+def check_valid_grid(grid: np.ndarray) -> bool:
+    """
+    Check if the grid is valid (i.e. has at least one non-zero value).
+    """
+    return np.any(grid != 0) and grid.ndim == 2 and grid.size > 0
 
 
 def get_grid_splits(
@@ -88,6 +120,7 @@ def split_thirds(
 def split_half(grid: np.ndarray, split_type: str) -> list[np.ndarray, np.ndarray]:
     """
     Split the grid into two halves based on the split axis.
+    Check on the split axis whether length of the grid is even or odd. If odd, remove the middle row/column and split the remaining grid into two halves.
     """
     rows, cols = grid.shape
     if type(split_type) is set and len(split_type) == 1:
@@ -96,7 +129,10 @@ def split_half(grid: np.ndarray, split_type: str) -> list[np.ndarray, np.ndarray
     if split_type == "horizontal":
         mid_row = rows // 2
         top_half = grid[:mid_row, :]
-        bottom_half = grid[mid_row + 1 :, :]
+        if rows % 2 != 0:
+            bottom_half = grid[mid_row + 1 :, :]
+        else:
+            bottom_half = grid[mid_row:, :]
         if top_half.shape[0] != bottom_half.shape[0]:
             return None
         return [top_half, bottom_half]
@@ -104,7 +140,10 @@ def split_half(grid: np.ndarray, split_type: str) -> list[np.ndarray, np.ndarray
     if split_type == "vertical":
         mid_col = cols // 2
         left_half = grid[:, :mid_col]
-        right_half = grid[:, mid_col + 1 :]
+        if cols % 2 != 0:
+            right_half = grid[:, mid_col + 1 :]
+        else:
+            right_half = grid[:, mid_col:]
         if left_half.shape[1] != right_half.shape[1]:
             return None
         return [left_half, right_half]
@@ -130,3 +169,41 @@ def split_half(grid: np.ndarray, split_type: str) -> list[np.ndarray, np.ndarray
     #     if top_right.shape != bottom_left.shape:
     #         return None
     # return [top_right, bottom_left]
+
+
+# -----------------------------------------------------------------------------
+# Relation based helper functions
+# -----------------------------------------------------------------------------
+def exact_translation(
+    a: frozenset[tuple[int, int]], b: frozenset[tuple[int, int]]
+) -> Optional[tuple[int, int]]:
+    """
+    Check if two sets are exact translations of each other.
+    Return the translation vector if they are, otherwise return None.
+    """
+    if len(a) != len(b):
+        return None
+
+    # Compare the minimum coordinates of both sets to determine the translation vector
+    min_a, min_b = min(a), min(b)
+    shift = (min_b[0] - min_a[0], min_b[1] - min_a[1])
+    if {(r + shift[0], c + shift[1]) for r, c in a} == set(b):
+        return shift
+    return None
+
+
+def calculate_distance(obj1_coords: frozenset[tuple[int, int]], obj2_coords: frozenset[tuple[int, int]]) -> int:
+    """
+    Use Chebyshev distance as working with a grid.
+    Scipy cdist can work on sets of pixels.
+    """
+    return int(distance.cdist(list(obj1_coords), list(obj2_coords), metric="chebyshev").min())
+
+
+def get_direction_vector(
+    centroid_1: tuple[float, float], centroid_2: tuple[float, float]
+) -> tuple[int, int]:
+    return (
+        int(np.sign(centroid_2[0] - centroid_1[0])),
+        int(np.sign(centroid_2[1] - centroid_1[1])),
+    )

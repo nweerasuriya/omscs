@@ -13,10 +13,10 @@ from dataclasses import dataclass
 import numpy as np
 from typing import Any, Callable, Iterable, Optional, Tuple
 
-from ArcMemory import ArcState, PropertyKwarg
+from ArcMemory import ArcState
 from ArcSet import ArcSet
 from ArcHeuristics import HeuristicSummary
-from kwarg_engine import check_relevant_kwargs, iter_relevant_kwargs
+from kwarg_engine import check_relevant_kwargs, iter_relevant_kwargs, SetSpecificKwarg
 
 
 class BoundTransformation:
@@ -29,11 +29,25 @@ class BoundTransformation:
         self.kwargs = kwargs
         self.prior = self.boost_prior_kwargs(kwargs, prior)
 
-    def apply(self, state: ArcState) -> ArcState:
+    def _resolve_references(self, kwargs: dict, original_state: ArcState) -> dict:
+        """
+        Resolve any references in the kwargs to the original state.
+        """
+        if not any(isinstance(v, (SetSpecificKwarg)) for v in kwargs.values()):
+            return kwargs
+        return {
+            k: (v.resolve(original_state) if isinstance(v, SetSpecificKwarg) else v)
+            for k, v in kwargs.items()
+        }
+
+    def apply(self, state: ArcState, original_state: ArcState = None) -> ArcState:
         """
         Apply the transformation to the given state.
         """
-        return self.transformation(state, **self.kwargs)
+        kwargs = self.kwargs.copy()
+        if original_state is not None:
+            kwargs = self._resolve_references(kwargs, original_state)
+        return self.transformation(state, **kwargs)
 
     def boost_prior_kwargs(self, kwargs: dict, prior: float) -> float:
         """
@@ -41,10 +55,11 @@ class BoundTransformation:
         boost the prior of the transformation based on the support score of the property association.
         """
         boost = 1
-        for key, value in kwargs.items():
-            if isinstance(value, PropertyKwarg):
+        for _, value in kwargs.items():
+            support_score = getattr(value, "support_score", None)
+            if support_score is not None:
                 # scale by log of support score to avoid over boosting
-                boost *= np.log(value.support_score + 1)
+                boost *= 1 + np.log(support_score + 1)
         return prior * boost
 
 
@@ -68,7 +83,6 @@ class ArcSearch:
         self.iter_relevant_kwargs = iter_relevant_kwargs
         self.state_from_array = state_from_array
         self.state_to_array = state_to_array
-        self.diff_error = self.grid_diff_error
 
         input_states, target_states = [], []
         for train_set in training_data:
@@ -79,6 +93,7 @@ class ArcSearch:
 
         self._input_state: Tuple[np.ndarray, ...] = tuple(input_states)
         self._target_state: Tuple[np.ndarray, ...] = tuple(target_states)
+        self.baseline_error = self._calculate_baseline_error()
 
     def get_input_state(self) -> Tuple[np.ndarray, ...]:
         return self._input_state
@@ -93,11 +108,21 @@ class ArcSearch:
         """
         Check if the current states match the target states.
         """
+        unique_states = []
+        unique_targets = []
+        for state in states:
+            if state not in unique_states:
+                unique_states.append(state)
+        for target in self._target_state:
+            if target not in unique_targets:
+                unique_targets.append(target)
         for state, target in zip(states, self._target_state):
             if not np.array_equal(
                 self.state_to_array(state), self.state_to_array(target)
             ):
                 return False
+
+        print("All states match the target states. Problem solved!")
         return True
 
     def candidate_transformations(self) -> list[BoundTransformation]:
@@ -109,7 +134,8 @@ class ArcSearch:
         candidates = []
         for transformation, prior in self.transformations:
             combinations = list(self._iter_kwargs(transformation))
-            share_prior = prior / len(combinations) if combinations else 0
+            # Share the prior over all relevant kwargs for the transformation
+            share_prior = prior / (1 + np.log(len(combinations) + 1))
             for kwargs in combinations:
                 candidates.append(
                     BoundTransformation(transformation, kwargs, share_prior)
@@ -117,12 +143,15 @@ class ArcSearch:
         return candidates
 
     def apply_transformation(
-        self, action: BoundTransformation, states: list[ArcState]
+        self, action: BoundTransformation, states: tuple[ArcState]
     ) -> Tuple:
         new_states = []
-        for arc_state in states:
+        for i, arc_state in enumerate(states):
+            original_state = self._input_state[i]
             try:
-                new_states.append(action.apply(arc_state))
+                if action.transformation.__name__ == "fill_overlap_with_original_grid":
+                    result_state = action.apply(arc_state, original_state)
+                new_states.append(action.apply(arc_state, original_state))
             except Exception as e:
                 print(
                     f"Error applying transformation {action.transformation.__name__}: {e}"
@@ -136,14 +165,28 @@ class ArcSearch:
         """
         Apply a sequence of transformations to the input array and return the predicted output array.
         """
-        state = self.state_from_array(input_array)
+        original_state = self.state_from_array(input_array)
+        state = original_state
         for action in program:
             try:
-                state = action.apply(state)
+                state = action.apply(state, original_state)
             except Exception as e:
                 print(f"Error in predict for {action.transformation.__name__}: {e}")
                 return None
         return self.state_to_array(state)
+
+    def _calculate_baseline_error(self) -> float:
+        """
+        Calculate the baseline error of the input states against the target states.
+        """
+        baseline_error = []
+        for input_state, target_state in zip(self._input_state, self._target_state):
+            baseline_error.append(
+                self.grid_diff_error(
+                    self.state_to_array(input_state), self.state_to_array(target_state)
+                )
+            )
+        return sum(baseline_error) / max(len(baseline_error), 1)
 
     @staticmethod
     def grid_diff_error(predicted: np.ndarray, target: np.ndarray) -> float:
@@ -151,36 +194,73 @@ class ArcSearch:
         Calculates the error between the predicted output and the actual output.
         Normalised between 0 and 1, where 0 is a perfect match and 1 is a complete mismatch.
 
-        Penalise shape mismatch not just pixel mismatch
+        1. Account for diferences in grid shape by calculating the absolute difference in shape normalised by the maximum shape.
+        2. Account for pixel differences by calculating the number of differing pixels normalised by the maximum number of pixels.
+
         TODO: Improve the error calculation to consider objects
         """
         if predicted is None:
             return 1.0
-        # First check grid shape
-        if predicted.shape != target.shape:
-            # find difference in shape
-            pred, act = predicted.shape, target.shape
-            shape_diff = abs(pred[0] - act[0]) / max(pred[0], act[0], 1)
-            return min(1.0, 0.5 + shape_diff)
-        # pixel-wise comparison
-        pixel_mismatch = float(np.count_nonzero(predicted != target))
-        total_pixels = predicted.size
-        return pixel_mismatch / total_pixels if total_pixels > 0 else 1.0
+
+        if predicted.shape == target.shape and np.array_equal(predicted, target):
+            return 0.0
+
+        # 1. First check grid shape
+        pred_h, pred_w = predicted.shape
+        target_h, target_w = target.shape
+        min_h, min_w = min(pred_h, target_h), min(pred_w, target_w)
+        max_h, max_w = max(pred_h, target_h), max(pred_w, target_w)
+
+        # Absolute difference in shape normalised by the maximum shape
+        shape_penalty = (
+            abs(pred_h - target_h) / max_h + abs(pred_w - target_w) / max_w
+        ) / 2
+
+        # 2. Check pixel difference
+        # Calculate on the minimum shape to avoid index errors
+        pixel_diff = np.count_nonzero(
+            predicted[:min_h, :min_w] != target[:min_h, :min_w]
+        )
+        max_size = max(predicted.size, target.size)
+        extra_pixels = max_size - min_h * min_w
+        norm_pixel_diff = (pixel_diff + extra_pixels) / max_size
+
+        if predicted.shape == target.shape:
+            return norm_pixel_diff
+
+        return 0.5 * shape_penalty + 0.5 * norm_pixel_diff
 
     def evaluate_cost(
-        self, states: list[ArcState], depth: int = 0, complexity_penalty: float = 0.1
+        self, states: list[ArcState], depth: int = 0, complexity_penalty: float = 0.0
     ) -> float:
         """
         Evaluate the cost of the current state based on the difference between predicted output and actual output.
         Account for complexity of the transformation sequence by adding a penalty for depth.
         """
+        # Check if length of states is the same as length of target states
+        if len(states) != len(self._target_state):
+            print(
+                f"Warning: Length of states ({len(states)}) does not match length of target states ({len(self._target_state)})."
+            )
+            return 1.0  # Return maximum error if lengths do not match
         error = sum(
-            self.diff_error(self.state_to_array(state), self.state_to_array(target))
+            self.grid_diff_error(
+                self.state_to_array(state), self.state_to_array(target)
+            )
             for state, target in zip(states, self._target_state)
-        )
-        complexity_penalty = complexity_penalty * depth
-        return error + complexity_penalty
+        ) / max(len(states), 1)
+        # Check if input state is the same as target state
+        if self.baseline_error < 1e-6:
+            norm_error = error
+        else:
+            norm_error = error / self.baseline_error
 
+        if depth > 10:
+            complexity_penalty = complexity_penalty * depth // 2
+        else:
+            complexity_penalty = 0.0
+        return norm_error + complexity_penalty
+    
 
 def breadth_first_search(
     sorted_primitives: list[Tuple[Callable, float]],
@@ -219,11 +299,27 @@ def breadth_first_search(
                     for second_kwargs in iter_relevant_kwargs(
                         second_hypothesis, kwarg_pool
                     ):
+                        # Count number of times 2 appears in the result state for debugging purposes
+                        count_2 = (result_state.grid_state.as_array == 2).sum()
                         try:
                             second_state = second_hypothesis(
                                 result_state, **second_kwargs
                             )
                             second_output = second_state.grid_state.as_array
+                            if (
+                                "connect" in first_hypothesis.__name__
+                                and count_2 > 2
+                                and second_kwargs["out_colour"] == 3
+                            ):
+                                print(
+                                    "Testing:",
+                                    second_hypothesis.__name__,
+                                    "Kwargs:",
+                                    second_kwargs,
+                                    "count_2:",
+                                    count_2,
+                                )
+                                print(second_output)
                         except Exception as e:
                             continue
 

@@ -8,21 +8,23 @@ __date__ = "2026-06-11"
 __author__ = "NedeeshaWeerasuriya"
 __version__ = "0.1"
 
-
+from typing import List, Optional, Tuple
 import numpy as np
 from dataclasses import dataclass, field
 from ArcMemory import ArcState, GridState, ObjectState, PixelSet
+from ArcRelations import RelationalGraph
 from ArcSet import ArcSet
 
 HU_TOLERANCE = 1
 # Mutation Related Parameters
 MUTATION_TYPES = ["growth", "shrink", "shape_change", "translation"]
-ASSOCIATION_TYPES = [
+ASSOCIATION_KWARGS = [
     "direction_vector",
     "centroid_change",
     "scale",
+    "new_colour_obj",
 ]
-OBJECT_PROPERTIES = ["colour", "is_closed", "has_hole"]
+OBJECT_PROPERTIES = ["colour", "is_closed"]
 MIN_ASSOCIATION_SUPPORT = 2
 
 
@@ -63,40 +65,26 @@ class GridDifference:
 
 
 @dataclass
-class ObjectDifference:
+class ObjectTransformation:
     """
-    Comparison of two object states
+    A single class to capture information on object transformations from input to output
     """
 
     set_id: int
-    object_id: tuple[int, int]
-
-    # Object
-    input_object: ObjectState
-    output_object: ObjectState
-    hu_distance: float
+    input_object_id: tuple[int, int]
+    output_object_id: tuple[int, int]
 
     # Changes
     colour_changed: bool
-    # only store the colours if there is a colour change
     colours: tuple[int, int]
     position_changed: bool
     shape_changed: bool
     size_changed: bool
 
-
-@dataclass
-class MutatatedObject:
-    """
-    Object that has mutated from input to output
-    """
-
-    set_id: int
-    input_object_id: int
-    output_object_id: int
     mutation_types: list[str]
     direction_vector: tuple[int, int] = field(default_factory=lambda: (0, 0))
     centroid_change: tuple[float, float] = field(default_factory=lambda: (0.0, 0.0))
+    new_colour_obj: Optional[int] = None
     scale: int = 1
 
 
@@ -108,9 +96,8 @@ class PropertyAssociation:
 
     kwarg: str
     object_property: str
-    mapping: dict
+    mapping: dict           # Maps object property values to the associated kwarg values
     support_score: float = 0.0
-
 
 @dataclass
 class ConservedAllSets:
@@ -134,8 +121,7 @@ class HeuristicSummary:
 
     conserved_properties: ConservedAllSets
     grid_differences: list[GridDifference]
-    object_differences: list[list[ObjectDifference]]
-    mutations: list[list[MutatatedObject]]
+    object_transformations: list[list[ObjectTransformation]]
     split_grid: dict[str, bool]
     property_associations: list[PropertyAssociation] = field(default_factory=list)
 
@@ -154,8 +140,7 @@ class HeuristicEngine:
         """
         # Analyse each set for grid and object differences
         grid_differences: list[GridDifference] = []
-        object_differences: list[list[ObjectDifference]] = []
-        mutation_list: list[list[MutatatedObject]] = []
+        object_transformations: list[list[ObjectTransformation]] = []
         split_grid: list[dict[str, bool]] = []
 
         for set_id, entry in enumerate(training_data):
@@ -165,22 +150,23 @@ class HeuristicEngine:
             # Create ArcState for input and output
             input_state = ArcState.from_array(input_array, extract_objects=True)
             output_state = ArcState.from_array(output_array, extract_objects=True)
-            self.state_cache[set_id] = {"input": input_state, "output": output_state}
+            self.state_cache[set_id] = {
+                "input": input_state, 
+                "output": output_state,
+                "input_graph": RelationalGraph(input_state),
+                "output_graph": RelationalGraph(output_state),
+            }
 
             # Analyse grid differences
             grid_diff = self._compare_grids(set_id, input_array, output_array)
             grid_differences.append(grid_diff)
 
             # Analyse object differences
-            object_diff = self._check_similar_objects(set_id, input_state, output_state)
-            object_differences.append(object_diff)
-
-            # Analyse object mutations
-            mutations = self._check_object_mutations(set_id, input_state, output_state)
-            mutation_list.append(mutations)
+            transformations = self.match_objects(set_id, input_state, output_state)
+            object_transformations.append(transformations)
 
             # Analyse split grid
-            split_grid_result = self._check_split_grid(input_array)
+            split_grid_result = self._check_split_grid(input_array, output_array)
             split_grid.append(split_grid_result)
 
         # If any one of the directions is true in all sets, then the split grid is considered true for that direction
@@ -196,17 +182,16 @@ class HeuristicEngine:
 
         # Analyse conserved properties across all sets
         conserved_properties = self._analyse_conserved_properties(
-            grid_differences, object_differences
+            grid_differences, object_transformations
         )
 
         # Object property associations with mutations
-        property_associations = self.infer_property_associations(mutation_list)
+        property_associations = self.infer_property_associations(object_transformations)
 
         return HeuristicSummary(
             conserved_properties=conserved_properties,
             grid_differences=grid_differences,
-            object_differences=object_differences,
-            mutations=mutation_list,
+            object_transformations=object_transformations,
             split_grid=split_grid,
             property_associations=property_associations,
         )
@@ -230,9 +215,12 @@ class HeuristicEngine:
         output_object_count = len(self.state_cache[set_id]["output"].objects)
         object_count_changed = input_object_count != output_object_count
 
-        # Colour differences not including 0
-        input_colours = set(np.unique(input_array)) - {0}
-        output_colours = set(np.unique(output_array)) - {0}
+        # Colour differences not including background colour
+        background_colour = self.state_cache[set_id][
+            "input"
+        ].grid_state.background_colour
+        input_colours = set(np.unique(input_array)) - {background_colour}
+        output_colours = set(np.unique(output_array)) - {background_colour}
         new_colours = output_colours - input_colours
         removed_colours = input_colours - output_colours
         colour_changed = bool(new_colours or removed_colours)
@@ -282,12 +270,17 @@ class HeuristicEngine:
             symmetry_changed=symmetry_changed,
         )
 
-    def _check_split_grid(self, input_array: np.ndarray) -> dict[str, bool]:
+    def _check_split_grid(
+        self, input_array: np.ndarray, output_array: np.ndarray
+    ) -> dict[str, bool]:
         """
         Check if the input grid is split by a straight line anywhere in the grid populated by non zero values.
         For diagonal splits, check if the diagonal or anti diagonal is populated by non zero values.
+
+        Also check if the output array is half the size in the same direction as the input array in the case.
         """
         rows, cols = input_array.shape
+        out_rows, out_cols = output_array.shape
         # Check for vertical split
         vertical_split = any(
             np.all(input_array[:, col] != 0) for col in range(1, cols - 1)
@@ -300,6 +293,15 @@ class HeuristicEngine:
         diagonal_split = np.all(np.diag(input_array) != 0)
         # anti diagonal split
         anti_diagonal_split = np.all(np.diag(np.fliplr(input_array)) != 0)
+
+        # Check output array for half size in the same direction as the input array
+        if not vertical_split:
+            if out_cols == cols // 2:
+                vertical_split = True
+        if not horizontal_split:
+            if out_rows == rows // 2:
+                horizontal_split = True
+
         return {
             "vertical": vertical_split,
             "horizontal": horizontal_split,
@@ -310,45 +312,90 @@ class HeuristicEngine:
     # -----------------------------------------------------------------------------
     # Object-level heuristics
     # -----------------------------------------------------------------------------
-    def _check_similar_objects(
+    def _hu_distance(
+        self, input_object: ObjectState, output_object: ObjectState
+    ) -> float:
+        """
+        Calculate the distance between two Hu moments.
+        """
+        hu1 = input_object.hu_moments
+        hu2 = output_object.hu_moments
+        if hu1 is None or hu2 is None:
+            return float("inf")
+        return float(np.linalg.norm(np.array(hu1) - np.array(hu2)))
+
+    def match_objects(
         self, set_id: int, input_state: ArcState, output_state: ArcState
-    ) -> list[ObjectDifference]:
+    ) -> list[ObjectTransformation]:
         """
-        Check in the training data, if there are objects that are similar from input to output.
-        Use the invariant properties of the objects to determine if they are the same object or not.
+        Two stages of object comparison:
+        1. Use Hu moments to find if objects are similar in input and output
+            Check in the training data, if there are objects that are similar from input to output.
+            Use the invariant properties of the objects to determine if they are the same object or not.
+        2. When hu moments diverge, find mutations in the objects from input to output.
         """
-        object_matches = []
+        transforms = []
+        visited_input_objects = set()
+        visited_output_objects = set()
 
         for i, input_object in enumerate(input_state.objects):
+            candidate_matches = [
+                (
+                    self._hu_distance(input_object, output_object),
+                    o,
+                )
+                for o, output_object in enumerate(output_state.objects)
+                if o not in visited_output_objects
+            ]
+            # Get only the matches that are within the tolerance
+            candidate_matches = [
+                (dist, o) for dist, o in candidate_matches if dist <= HU_TOLERANCE
+            ]
+            if not candidate_matches:
+                continue
+            closest_distance, o = min(candidate_matches, key=lambda x: x[0])
+            visited_input_objects.add(i)
+            visited_output_objects.add(o)
+            transform = self._describe_mutation(
+                set_id, i, o, input_object, output_state.objects[o]
+            )
+            transforms.append(transform)
+            #self._save_mutation(input_state, i, transform)
+
+        for i, input_object in enumerate(input_state.objects):
+            if i in visited_input_objects:
+                continue
+            best_iou = 0
+            best_o = None
             for o, output_object in enumerate(output_state.objects):
-                # Use the Hu moments to find if object is similar in input and output
-                # Use euclidean distance between Hu moments to determine if objects are the same
-                if input_object.hu_moments is not None:
-                    distance = np.linalg.norm(
-                        np.array(input_object.hu_moments)
-                        - np.array(output_object.hu_moments)
-                    )
-                    # store any objects that pass the threshold as similar objects
-                    if distance < HU_TOLERANCE:
-                        colour_changed = input_object.colour != output_object.colour
-                        colours = (input_object.colour, output_object.colour)
-                        object_matches.append(
-                            ObjectDifference(
-                                set_id=set_id,
-                                object_id=(i, o),
-                                input_object=input_object,
-                                output_object=output_object,
-                                hu_distance=distance,
-                                colour_changed=colour_changed,
-                                colours=colours if colour_changed else None,
-                                position_changed=input_object.centroid
-                                != output_object.centroid,
-                                shape_changed=input_object.bounding_box
-                                != output_object.bounding_box,
-                                size_changed=input_object.area != output_object.area,
-                            )
-                        )
-        return object_matches
+                if o in visited_output_objects:
+                    continue
+                if not self._bbox_overlap(
+                    input_object.bounding_box, output_object.bounding_box
+                ):
+                    continue
+                # cUse IoU (Intersection over Union) to find the best match between the two objects
+                intersection = len(
+                    input_object.cell_positions & output_object.cell_positions
+                )
+                if intersection == 0:
+                    continue
+                union = len(input_object.cell_positions | output_object.cell_positions)
+                iou = intersection / union
+                if iou > best_iou:
+                    best_iou = iou
+                    best_o = o
+
+            if best_o is not None:
+                visited_input_objects.add(i)
+                visited_output_objects.add(best_o)
+                transform = self._describe_mutation(
+                    set_id, i, best_o, input_object, output_state.objects[best_o]
+                )
+                transforms.append(transform)
+                #self._save_mutation(input_state, i, transform)
+
+        return transforms
 
     def _bbox_overlap(
         self, bbox1: tuple[int, int, int, int], bbox2: tuple[int, int, int, int]
@@ -406,114 +453,105 @@ class HeuristicEngine:
             )
         return scale
 
-    def _check_object_mutations(
-        self, set_id: int, input_state: ArcState, output_state: ArcState
-    ) -> list[MutatatedObject]:
+    def _describe_mutation(
+        self,
+        set_id: int,
+        i: int,
+        o: int,
+        in_object: ObjectState,
+        out_object: ObjectState,
+    ) -> ObjectTransformation:
         """
         Identify objects which have mutated from the input to output.
         Only consider subsets of objects for now. So one object must be a subset of the other.
 
         Consider shape, size and translation changes. Check as matrix so combinations of changes can be detected.
         """
-        mutations = []
-        for i, input_object in enumerate(input_state.objects):
-            for o, output_object in enumerate(output_state.objects):
-                # Check bounding box of one object is a subset of the other
-                if not (
-                    self._bbox_overlap(
-                        input_object.bounding_box, output_object.bounding_box
-                    )
-                ):
-                    continue
+        input_pixels = in_object.cell_positions
+        output_pixels = out_object.cell_positions
+        # Determine type of change
+        mutation_types = []
+        is_subset = False
+        is_superset = False
 
-                # Determine type of change
-                mutation_types = []
+        # Check if one object is a subset of the other (frozenset property)
+        if len(input_pixels) < len(output_pixels):
+            if input_pixels <= output_pixels:
+                mutation_types.append("growth")
+                is_subset = True
+        elif len(input_pixels) > len(output_pixels):
+            if output_pixels <= input_pixels:
+                mutation_types.append("shrink")
+                is_superset = True
 
-                input_pixels = input_object.cell_positions
-                output_pixels = output_object.cell_positions
+        # Shape Change
+        if len(input_pixels) != len(output_pixels) and not (is_subset or is_superset):
+            mutation_types.append("shape_change")
+        if (
+            len(input_pixels) == len(output_pixels)
+            and in_object.bounding_box != out_object.bounding_box
+        ):
+            mutation_types.append("shape_change")
 
-                is_subset = False
-                is_superset = False
+        centroid_change = (
+            (out_object.centroid[0] - in_object.centroid[0]),
+            (out_object.centroid[1] - in_object.centroid[1]),
+        )
+        # Translation if there is a change in position but not shape or size
+        if mutation_types == [] and centroid_change != (0, 0):
+            mutation_types.append("translation")
 
-                # Check if one object is a subset of the other (frozenset property)
-                if len(input_pixels) < len(output_pixels):
-                    if input_pixels <= output_pixels:
-                        mutation_types.append("growth")
-                        is_subset = True
-                elif len(input_pixels) > len(output_pixels):
-                    if output_pixels <= input_pixels:
-                        mutation_types.append("shrink")
-                        is_superset = True
+        # Check direction of additional pixels for growth or shape change
+        direction_vector = (0, 0)
+        if "growth" in mutation_types or "shape_change" in mutation_types:
+            # Find new pixels in output that are not in input
+            new_pixels = output_pixels - input_pixels
+            if new_pixels:
+                new_avg_row = sum(r for r, c in new_pixels) / len(new_pixels)
+                new_avg_col = sum(c for r, c in new_pixels) / len(new_pixels)
 
-                # Shape Change
-                if len(input_pixels) != len(output_pixels) and not (
-                    is_subset or is_superset
-                ):
-                    mutation_types.append("shape_change")
-                if (
-                    len(input_pixels) == len(output_pixels)
-                    and input_object.bounding_box != output_object.bounding_box
-                ):
-                    mutation_types.append("shape_change")
-
-                centroid_change = (
-                    (output_object.centroid[0] - input_object.centroid[0]),
-                    (output_object.centroid[1] - input_object.centroid[1]),
+                # Check from centroid
+                dir_row = new_avg_row - in_object.centroid[0]
+                dir_col = new_avg_col - in_object.centroid[1]
+                direction_vector = (
+                    int(np.sign(dir_row)),
+                    int(np.sign(dir_col)),
                 )
-                # Translation if there is a change in position but not shape or size
-                if mutation_types == [] and centroid_change != (0, 0):
-                    mutation_types.append("translation")
+        elif "translation" in mutation_types:
+            direction_vector = (
+                int(np.sign(centroid_change[0])),
+                int(np.sign(centroid_change[1])),
+            )
 
-                # Check direction of additional pixels for growth or shape change
-                direction_vector = (0, 0)
-                if "growth" in mutation_types or "shape_change" in mutation_types:
-                    # Find new pixels in output that are not in input
-                    new_pixels = output_pixels - input_pixels
-                    if new_pixels:
-                        new_avg_row = sum(r for r, c in new_pixels) / len(new_pixels)
-                        new_avg_col = sum(c for r, c in new_pixels) / len(new_pixels)
+        scale = self.mutation_scale(
+            direction_vector,
+            centroid_change,
+            input_pixels,
+            output_pixels,
+            mutation_types,
+        )
 
-                        # Check from centroid
-                        dir_row = new_avg_row - input_object.centroid[0]
-                        dir_col = new_avg_col - input_object.centroid[1]
-                        direction_vector = (
-                            int(np.sign(dir_row)),
-                            int(np.sign(dir_col)),
-                        )
+        colour_changed = in_object.colour != out_object.colour
 
-                # Add mutation direction information to input_state
-                current_mutation_types = input_state.objects[i].mutation_types
-                current_mutation_vectors = input_state.objects[i].mutation_vectors
-                input_state.objects[i] = input_state.objects[i]._replace(
-                    mutation_types=current_mutation_types.union(mutation_types),
-                    mutation_vectors=current_mutation_vectors + (centroid_change,),
-                )
-
-                # Determine scale of change
-                scale = self.mutation_scale(
-                    direction_vector,
-                    centroid_change,
-                    input_pixels,
-                    output_pixels,
-                    mutation_types,
-                )
-
-                mutations.append(
-                    MutatatedObject(
-                        set_id=set_id,
-                        input_object_id=i,
-                        output_object_id=o,
-                        mutation_types=mutation_types,
-                        centroid_change=centroid_change,
-                        direction_vector=direction_vector,
-                        scale=scale,
-                    )
-                )
-        return mutations
+        return ObjectTransformation(
+            set_id=set_id,
+            input_object_id=i,
+            output_object_id=o,
+            colour_changed=colour_changed,
+            colours=(in_object.colour, out_object.colour),
+            position_changed=centroid_change != (0, 0),
+            shape_changed=in_object.bounding_box != out_object.bounding_box,
+            size_changed=len(input_pixels) != len(output_pixels),
+            mutation_types=mutation_types,
+            direction_vector=direction_vector,
+            centroid_change=centroid_change,
+            scale=scale,
+            new_colour_obj=out_object.colour if colour_changed else None,
+        )
 
     def check_association_mutation_object_prop(
         self,
-        mutation_list: list[list[MutatatedObject]],
+        mutation_list: list[list[ObjectTransformation]],
         obj_property: str,
         kwarg: str,
     ) -> PropertyAssociation:
@@ -552,14 +590,14 @@ class HeuristicEngine:
         )
 
     def infer_property_associations(
-        self, mutation_list: list[list[MutatatedObject]]
+        self, mutation_list: list[list[ObjectTransformation]]
     ) -> list[PropertyAssociation]:
         """
         Check if the property associations are valid and return a list of PropertyAssociation objects.
         """
         associations = []
         for obj_property in OBJECT_PROPERTIES:
-            for kwarg in ASSOCIATION_TYPES:
+            for kwarg in ASSOCIATION_KWARGS:
                 association = self.check_association_mutation_object_prop(
                     mutation_list, obj_property, kwarg
                 )
@@ -572,6 +610,7 @@ class HeuristicEngine:
                 ):
                     associations.append(association)
         return associations
+    
 
     # -----------------------------------------------------------------------------
     # Conserved properties analysis
@@ -580,7 +619,7 @@ class HeuristicEngine:
     def _analyse_conserved_properties(
         self,
         grid_differences: list[GridDifference],
-        object_differences: list[list[ObjectDifference]],
+        object_transformations: list[list[ObjectTransformation]],
     ) -> ConservedAllSets:
         """
         Analyse the differences across all sets in the ArcProblem
@@ -597,15 +636,12 @@ class HeuristicEngine:
                 for i in range(len(grid_differences))
             ),
             object_colours=all(
-                all(
-                    obj_diff.input_object.colour == obj_diff.output_object.colour
-                    for obj_diff in object_diff_list
-                )
-                for object_diff_list in object_differences
+                all(obj.colour_changed == False for obj in object_diff_list)
+                for object_diff_list in object_transformations
             ),
             object_shapes=all(
-                all(obj_diff.shape_changed == False for obj_diff in object_diff_list)
-                for object_diff_list in object_differences
+                all(obj.shape_changed == False for obj in object_diff_list)
+                for object_diff_list in object_transformations
             ),
             all_square_grid=all(
                 grid_diff.input_shape[0] == grid_diff.input_shape[1]

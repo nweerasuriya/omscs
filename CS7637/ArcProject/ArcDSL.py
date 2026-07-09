@@ -8,23 +8,27 @@ __date__ = "2026-06-10"
 __author__ = "NedeeshaWeerasuriya"
 __version__ = "0.1"
 
+from typing import Any
+
 import numpy as np
 import scipy.ndimage as ndi
-from ArcMemory import (
+from MemoryDecorators import (
     grid_primitive,
     object_primitive,
     split_grid_primitive,
+)
+from ArcMemory import (
     ObjectState,
     GridState,
     PixelSet,
 )
 from ArcPruning import Require, Effect
+from helpers import determine_new_obj_props
+
 
 # -----------------------------------------------------------------------------
 # Base Logical Operators
 # -----------------------------------------------------------------------------
-
-
 @grid_primitive
 def logic_not(array: np.ndarray) -> np.ndarray:
     return np.bitwise_not(array)
@@ -89,17 +93,6 @@ def logic_nor(array_list: list, fill_colour: int = 1) -> np.ndarray:
     return np.where(overlap_mask, fill_colour, combined)
 
 
-# @split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
-# def logic_xnor(array_list: list, fill_colour: int = 1) -> np.ndarray:
-#     """
-#     Perform logical XNOR operation. Keep original colours unless overlap occurs, then fill with fill_colour
-#     """
-#     count = np.sum([a != 0 for a in array_list], axis=0)
-#     combined = np.maximum.reduce(array_list)
-#     fill_mask = (count % 2 == 0) & (count > 0)
-#     return np.where(fill_mask, fill_colour, combined)
-
-
 @split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_and_(array_list: list, fill_colour: int = 1) -> np.ndarray:
     mask = np.logical_and.reduce([a != 0 for a in array_list])
@@ -137,21 +130,18 @@ def logic_xnor_(array_list: list, fill_colour: int = 1) -> np.ndarray:
 
 
 # -----------------------------------------------------------------------------
-# Grid level functions
+# Rotations and Flips
 # -----------------------------------------------------------------------------
 @grid_primitive()
-def rotation_90(input_array: np.ndarray) -> np.ndarray:
-    return np.rot90(input_array, k=1)
+def rotate_grid(input_array: np.ndarray, quarter_turn: int) -> np.ndarray:
+    return np.rot90(input_array, k=quarter_turn)
 
 
-@grid_primitive()
-def rotation_180(input_array: np.ndarray) -> np.ndarray:
-    return np.rot90(input_array, k=2)
-
-
-@grid_primitive()
-def rotation_270(input_array: np.ndarray) -> np.ndarray:
-    return np.rot90(input_array, k=3)
+@object_primitive()
+def rotate_object(obj: ObjectState, quarter_turn: int) -> np.ndarray:
+    rotated = np.rot90(obj.mask, k=quarter_turn)
+    new_pixels = determine_new_obj_props(rotated, obj.centroid)
+    return _update_object_state(obj, PixelSet(new_pixels))
 
 
 @grid_primitive()
@@ -159,9 +149,23 @@ def flip_horizontal(input_array: np.ndarray) -> np.ndarray:
     return np.fliplr(input_array)
 
 
+@object_primitive()
+def flip_object_horizontal(obj: ObjectState) -> ObjectState:
+    flipped_grid = np.fliplr(obj.mask)
+    new_pixels = determine_new_obj_props(flipped_grid, obj.centroid)
+    return _update_object_state(obj, PixelSet(new_pixels))
+
+
 @grid_primitive()
 def flip_vertical(input_array: np.ndarray) -> np.ndarray:
     return np.flipud(input_array)
+
+
+@object_primitive()
+def flip_object_vertical(obj: ObjectState) -> ObjectState:
+    flipped_grid = np.flipud(obj.mask)
+    new_pixels = determine_new_obj_props(flipped_grid, obj.centroid)
+    return _update_object_state(obj, PixelSet(new_pixels))
 
 
 @grid_primitive(tags={Require.SQUARE_GRID})
@@ -169,15 +173,36 @@ def flip_diagonal(input_array: np.ndarray) -> np.ndarray:
     return np.transpose(input_array)
 
 
+@object_primitive(tags={Require.SQUARE_GRID})
+def flip_object_diagonal(obj: ObjectState) -> ObjectState:
+    flipped_grid = np.transpose(obj.mask)
+    new_pixels = determine_new_obj_props(flipped_grid, obj.centroid)
+    return _update_object_state(obj, PixelSet(new_pixels))
+
+
 @grid_primitive(tags={Require.SQUARE_GRID})
 def flip_anti_diagonal(input_array: np.ndarray) -> np.ndarray:
     return np.fliplr(np.transpose(input_array))
 
 
-@grid_primitive(tags={Effect.GRID_SIZE})
+@object_primitive(tags={Require.SQUARE_GRID})
+def flip_object_anti_diagonal(obj: ObjectState) -> ObjectState:
+    flipped_grid = np.fliplr(np.transpose(obj.mask))
+    new_pixels = determine_new_obj_props(flipped_grid, obj.centroid)
+    return _update_object_state(obj, PixelSet(new_pixels))
+
+
+# -----------------------------------------------------------------------------
+# Colour level functions
+# -----------------------------------------------------------------------------
+@grid_primitive(tags={Effect.GRID_SIZE, Effect.SHRINK})
 def crop_background_out(
     input_array: np.ndarray, background_color: int = 0
 ) -> np.ndarray:
+    if not np.any(input_array != background_color):
+        return (
+            input_array  # Return the original array if all values are background color
+        )
     rows = np.any(input_array != background_color, axis=1)
     cols = np.any(input_array != background_color, axis=0)
     return input_array[np.ix_(rows, cols)]
@@ -204,13 +229,15 @@ def update_colour(
 
 
 @grid_primitive(tags={Effect.COLOUR, Require.REMOVE_COLOURS})
-def remove_colours(input_array: np.ndarray, removed_colour_set: set[int]) -> np.ndarray:
+def remove_colours(
+    input_array: np.ndarray, removed_colour_set: set[int], background_colour: int = 0
+) -> np.ndarray:
     """
     Remove the specified colours from the input array by setting them to background colour 0.
     """
     grid = input_array.copy()
     for colour in removed_colour_set:
-        grid = np.where(grid == colour, 0, grid)
+        grid = np.where(grid == colour, background_colour, grid)
     return grid
 
 
@@ -224,19 +251,21 @@ def change_background_colour(input_array: np.ndarray, out_colour: int) -> np.nda
     return np.where(grid == current_background_colour, out_colour, grid)
 
 
-# @grid_primitive(tags={Effect.COLOUR})
-# def fill_default_colour(
-#     input_array: np.ndarray, out_colour: int, default_colour: int = 1
-# ) -> np.ndarray:
-#     """
-#     Fill the input array with the specified out_colour where the default_colour is present.
-#     """
-#     grid = input_array.copy()
-#     return np.where(grid == default_colour, out_colour, grid)
+@grid_primitive(tags={Effect.COLOUR})
+def fill_default_colour(
+    input_array: np.ndarray, out_colour: int, default_colour: int = 1
+) -> np.ndarray:
+    """
+    Fill the input array with the specified out_colour where the default_colour is present.
+    """
+    grid = input_array.copy()
+    return np.where(grid == default_colour, out_colour, grid)
 
 
 @grid_primitive(tags={Effect.COLOUR})
-def invert_input_colours(input_array: np.ndarray) -> np.ndarray:
+def invert_input_colours(
+    input_array: np.ndarray, background_colour: int = 0
+) -> np.ndarray:
     """
     If two colours are present in the input array, invert them.
     If one colour is present, invert with background colour 0.
@@ -244,7 +273,7 @@ def invert_input_colours(input_array: np.ndarray) -> np.ndarray:
     grid = input_array.copy()
     colours = np.unique(grid)
     # remove background colour 0 from the list of colours
-    colours = colours[colours != 0]
+    colours = colours[colours != background_colour]
     if len(colours) == 1:
         # Only one colour present, invert with background colour 0
         mask = grid == colours[0]
@@ -258,40 +287,70 @@ def invert_input_colours(input_array: np.ndarray) -> np.ndarray:
 
 @grid_primitive(tags={Effect.COLOUR})
 def colour_grey_to_black(input_array: np.ndarray, grey: int = 5) -> np.ndarray:
+    if not np.any(input_array == grey):
+        return input_array
     grid = input_array.copy()
     return np.where(grid == grey, 0, grid)
 
 
-@grid_primitive(tags={Effect.SHAPE})
-def connect_same_colour(input_array: np.ndarray) -> np.ndarray:
+@object_primitive(tags={Effect.COLOUR})
+def recolour_object(obj: ObjectState, new_colour_obj: int) -> ObjectState:
+    return obj._replace(colour=new_colour_obj)
+
+
+@grid_primitive(tags={Effect.COLOUR})
+def connect_same_colour(input_array: np.ndarray, out_colour: int) -> np.ndarray:
     """
-    Connects any pixels of the same colour that are not connected by filling in the gaps between them.
-    Only connect in straight lines (horizontal, vertical).
+    Connects pixels of the specified colour that are not connected by filling in the gaps between them.
+    Only connect in straight lines (horizontal, vertical, diagonal)
     """
     grid = input_array.copy()
     rows, cols = grid.shape
 
     # Check horizontal
     for row in range(rows):
-        colour_pixels = np.where(grid[row, :] != 0)[0]
-        # Check for two pixels of the same colour and connect them
-        if len(colour_pixels) > 1:
-            for i in range(len(colour_pixels) - 1):
-                start = colour_pixels[i]
-                end = colour_pixels[i + 1]
-                if grid[row, start] == grid[row, end]:
-                    grid[row, start : end + 1] = grid[row, start]
+        colour_pixels = np.where(grid[row, :] == out_colour)[0]
+        if len(colour_pixels) >= 2:
+            start = colour_pixels[0]
+            end = colour_pixels[-1]
+            grid[row, start : end + 1] = grid[row, start]
 
     # Check vertical
     for col in range(cols):
-        colour_pixels = np.where(grid[:, col] != 0)[0]
-        # Check for two pixels of the same colour and connect them
-        if len(colour_pixels) > 1:
-            for i in range(len(colour_pixels) - 1):
-                start = colour_pixels[i]
-                end = colour_pixels[i + 1]
-                if grid[start, col] == grid[end, col]:
-                    grid[start : end + 1, col] = grid[start, col]
+        colour_pixels = np.where(grid[:, col] == out_colour)[0]
+        if len(colour_pixels) >= 2:
+            start = colour_pixels[0]
+            end = colour_pixels[-1]
+            if grid[start, col] == grid[end, col]:
+                grid[start : end + 1, col] = grid[start, col]
+
+    # Check diagonal
+    for row in range(rows):
+        for col in range(cols):
+            if grid[row, col] != out_colour:
+                continue
+            # Check diagonal down-right
+            r, c = row + 1, col + 1
+            while r < rows and c < cols and grid[r, c] != out_colour:
+                r += 1
+                c += 1
+            if r < rows and c < cols and grid[r, c] == out_colour:
+                for i in range(r - row + 1):
+                    grid[row + i, col + i] = out_colour
+
+    # Check anti-diagonal
+    for row in range(rows):
+        for col in range(cols):
+            if grid[row, col] != out_colour:
+                continue
+            # Check diagonal up-right
+            r, c = row - 1, col + 1
+            while r >= 0 and c < cols and grid[r, c] != out_colour:
+                r -= 1
+                c += 1
+            if r >= 0 and c < cols and grid[r, c] == out_colour:
+                for i in range(row - r + 1):
+                    grid[row - i, col + i] = out_colour
     return grid
 
 
@@ -310,22 +369,25 @@ def fill_enclosed_area(
     return filled_array
 
 
-@grid_primitive(tags={Effect.GRID_SIZE})
-def unfold_grid_vertical(input_array: np.ndarray, axis: int = 1) -> np.ndarray:
+@grid_primitive(tags={Effect.COLOUR})
+def fill_overlap_with_original_grid(
+    input_array: np.ndarray,
+    original_grid: GridState,
+    out_colour: int,
+    background_colour: int,
+) -> np.ndarray:
     """
-    Unfolds the grid vertically, producing a new grid with the same number of rows but double the number of columns.
-    The array is mirrored along the vertical axis, and the two halves are concatenated side by side.
+    Compare two grids. Where input_array has a non-background pixel that differs
+    from original_grid, fill with out_colour. Otherwise (background pixels, or
+    pixels matching original_grid), keep original_grid's colour.
     """
-    return np.concatenate((input_array, np.fliplr(input_array)), axis=axis)
-
-
-@grid_primitive(tags={Effect.GRID_SIZE})
-def unfold_grid_horizontal(input_array: np.ndarray, axis: int = 0) -> np.ndarray:
-    """
-    Unfolds the grid horizontally, producing a new grid with the same number of columns but double the number of rows.
-    The array is mirrored along the horizontal axis, and the two halves are concatenated one on top of the other.
-    """
-    return np.concatenate((input_array, np.flipud(input_array)), axis=axis)
+    if input_array.shape != original_grid.as_array.shape:
+        return input_array
+    diff_mask = (input_array != original_grid.as_array) & (
+        original_grid.as_array != background_colour
+    )
+    filled_array = np.where(diff_mask, out_colour, input_array)
+    return filled_array
 
 
 # -----------------------------------------------------------------------------
@@ -366,7 +428,7 @@ def mirror_anti_diagonal(input_array: np.ndarray) -> np.ndarray:
 # -----------------------------------------------------------------------------
 # Other Grid Primitives
 # -----------------------------------------------------------------------------
-@grid_primitive(tags={Effect.GRID_SIZE})
+@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
 def pad_grid(
     input_array: np.ndarray, pad_width: int = 1, pad_value: int = 0
 ) -> np.ndarray:
@@ -378,6 +440,46 @@ def pad_grid(
     )
 
 
+@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
+def unfold_grid_vertical(input_array: np.ndarray, axis: int = 1) -> np.ndarray:
+    """
+    Unfolds the grid vertically, producing a new grid with the same number of rows but double the number of columns.
+    The array is mirrored along the vertical axis, and the two halves are concatenated side by side.
+    """
+    return np.concatenate((input_array, np.fliplr(input_array)), axis=axis)
+
+
+@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
+def unfold_grid_horizontal(input_array: np.ndarray, axis: int = 0) -> np.ndarray:
+    """
+    Unfolds the grid horizontally, producing a new grid with the same number of columns but double the number of rows.
+    The array is mirrored along the horizontal axis, and the two halves are concatenated one on top of the other.
+    """
+    return np.concatenate((input_array, np.flipud(input_array)), axis=axis)
+
+
+@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
+def unfold_half_grid_vertical(input_array: np.ndarray, axis: int = 1) -> np.ndarray:
+    """
+    Unfolds the grid vertically, producing a new grid with the same number of rows but double the number of columns.
+    The array is mirrored along the vertical axis, and the two halves are concatenated side by side.
+    """
+    half_cols = input_array.shape[1] // 2
+    left_half = input_array[:, :half_cols]
+    return np.concatenate((left_half, np.fliplr(left_half)), axis=axis)
+
+
+@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
+def unfold_half_grid_horizontal(input_array: np.ndarray, axis: int = 0) -> np.ndarray:
+    """
+    Unfolds the grid horizontally, producing a new grid with the same number of columns but double the number of rows.
+    The array is mirrored along the horizontal axis, and the two halves are concatenated one on top of the other.
+    """
+    half_rows = input_array.shape[0] // 2
+    top_half = input_array[:half_rows, :]
+    return np.concatenate((top_half, np.flipud(top_half)), axis=axis)
+
+
 # -----------------------------------------------------------------------------
 # Object Primitives
 # -----------------------------------------------------------------------------
@@ -385,13 +487,24 @@ def _update_object_state(obj: ObjectState, new_cell_positions: PixelSet) -> Obje
     """
     Update the object state with new cell positions
     """
+    # Recalculate bounding box, centroid, and area based on new cell positions
+    if not new_cell_positions:
+        bounding_box = obj.bounding_box
+        centroid = obj.centroid
+        area = 0
+    else:
+        rows, cols = zip(*new_cell_positions)
+        bounding_box = (min(rows), max(rows), min(cols), max(cols))
+        area = len(new_cell_positions)
+        centroid = (sum(rows) / area, sum(cols) / area)
+
     return ObjectState(
         label_id=obj.label_id,
         colour=obj.colour,
         grid_size=obj.grid_size,
-        bounding_box=obj.bounding_box,
-        centroid=obj.centroid,
-        area=obj.area,
+        bounding_box=bounding_box,
+        centroid=centroid,
+        area=area,
         cell_positions=new_cell_positions,
         hu_moments=obj.hu_moments,
     )
@@ -433,7 +546,7 @@ def fill_bounding_box(
 # @object_primitive(tags={Effect.SHAPE})
 # def fill_enclosed_area(
 #     obj: ObjectState,
-#     out_colour: set[int] = {1},
+#     out_colour: int,
 # ):
 #     """
 #     Fill any enclosed area of the object with the specified colour.
@@ -467,13 +580,14 @@ def fill_bounding_box(
 @object_primitive(tags={Effect.SHAPE})
 def unfill_object(
     obj: ObjectState,
+    background_colour: int = 0,
 ) -> ObjectState:
     """
     Unfill the object, only keeping the border of the object and setting the inside to background colour
     """
     cell_positions = obj.cell_positions
     new_cell_positions = set()
-    # Get border cells only by checking if any of the 4 neighbors are background color
+    # Get border cells only
     for cell in cell_positions:
         x, y = cell
         neighbors = [
@@ -568,29 +682,28 @@ def add_line_to_object(
 ) -> ObjectState:
     """
     Add a line to the object in the middle of the bounding box in the specified direction
-    Line should extent to the edge of the grid in the specified direction
+    Single line should extent to the edge of the grid in the specified direction
     Start from edge of the object in the direction of the line
     """
     cell_positions = obj.cell_positions
     grid_shape = obj.grid_size
-    # Get the edge of the object in the direction of the line
-    edge_cells = set()
-    for cell in cell_positions:
-        x, y = cell
-        dx, dy = direction_vector
-        neighbor = (x + dx, y + dy)
-        if neighbor not in cell_positions:
-            edge_cells.add(cell)
+    dx, dy = direction_vector
+
+    if not cell_positions:
+        return obj
+
+    # Get furthest point in the direction of the line
+    start_point = max(cell_positions, key=lambda p: (p[0] * dx + p[1] * dy))
     new_cell_positions = set(cell_positions)
-    for cell in edge_cells:
-        x, y = cell
-        dx, dy = direction_vector
-        for s in range(1, scale + 1):
-            new_cell = (x + s * dx, y + s * dy)
-            if 0 <= new_cell[0] < grid_shape[0] and 0 <= new_cell[1] < grid_shape[1]:
-                new_cell_positions.add(new_cell)
-            else:
-                break
+    x, y = start_point
+    for i in range(1, scale + 1):
+        new_x = x + i * dx
+        new_y = y + i * dy
+        if 0 <= new_x < grid_shape[0] and 0 <= new_y < grid_shape[1]:
+            new_cell_positions.add((new_x, new_y))
+        else:
+            break
+
     return _update_object_state(obj, PixelSet(new_cell_positions))
 
 
@@ -608,3 +721,32 @@ def translate_object(
         dx, dy = direction_vector
         new_cell_positions.add((x + scale * dx, y + scale * dy))
     return _update_object_state(obj, PixelSet(new_cell_positions))
+
+
+# -----------------------------------------------------------------------------
+# Relation based primitives
+# -----------------------------------------------------------------------------
+# @relation_primitive(tags={Effect.TRANSLATE})
+# def move_towards_obj(
+#     obj: ObjectState, others: tuple[ObjectState, ...], scale: int = 1
+# ) -> ObjectState:
+#     """
+#     Move the object towards the target object by 1 unit in the direction of the target object
+#     """
+#     cell_positions = obj.cell_positions
+#     target_centroid = others[0].centroid if others else obj.centroid
+#     obj_centroid = obj.centroid
+
+#     # Calculate direction vector towards the target object
+#     direction_vector = (
+#         np.sign(target_centroid[0] - obj_centroid[0]),
+#         np.sign(target_centroid[1] - obj_centroid[1]),
+#     )
+
+#     new_cell_positions = set()
+#     for cell in cell_positions:
+#         x, y = cell
+#         dx, dy = direction_vector
+#         new_cell_positions.add((x + scale * dx, y + scale * dy))
+
+#     return _update_object_state(obj, PixelSet(new_cell_positions))

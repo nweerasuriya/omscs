@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from typing import Callable, Any
 from scipy import ndimage
 from skimage.measure import label, regionprops
-from helpers import get_grid_splits
 
 # -----------------------------------------------------------------------------
 # Type Aliases
@@ -30,127 +29,6 @@ GridArray = tuple[tuple[int, ...], ...]
 PixelSet = frozenset[tuple[int, int]]
 HuMoments = tuple[float, float, float, float, float, float, float]
 Colour = int
-
-
-# -----------------------------------------------------------------------------
-# Data Classes
-# -----------------------------------------------------------------------------
-@dataclass(frozen=True)
-class PropertyKwarg:
-    """
-    Represents a kwarg which is conditioned on a specific property of an object.
-    """
-
-    object_property: str
-    mapping: tuple[tuple[Any, Any], ...]
-    support_score: float = 0.0
-    default_value: Any = None
-
-    def find_kwarg(self, object: "ObjectState") -> Any:
-        """
-        Given an object, find the corresponding kwarg value based on the mapping.
-        """
-        if hasattr(object, self.object_property):
-            value = getattr(object, self.object_property)
-            for prop_value, kwarg_value in self.mapping:
-                if prop_value == value:
-                    return kwarg_value
-        return self.default_value
-
-
-# -----------------------------------------------------------------------------
-# Decorators for DSL Primitives
-# -----------------------------------------------------------------------------
-
-GRID_PRIMITIVES: list[callable] = []
-OBJECT_PRIMITIVES: list[callable] = []
-CELL_PRIMITIVES: list[callable] = []
-SPLIT_GRID_PRIMITIVES: list[callable] = []
-
-
-def grid_primitive(func=None, *, tags=None):
-    """
-    Decorator to automatically transition an ArcState to an array and back.
-    Add tags to help in pruning.
-    """
-
-    def decorator(inner_func):
-        @functools.wraps(inner_func)
-        def wrapper(state: ArcState, *args, **kwargs) -> ArcState:
-            raw_grid = state.to_array()
-            transformed_grid = inner_func(raw_grid, *args, **kwargs)
-            return ArcState.from_array(transformed_grid, extract_objects=True)
-
-        wrapper.tags = frozenset(tags or ())
-        GRID_PRIMITIVES.append(wrapper)
-        return wrapper
-
-    if func is None:
-        return decorator
-    return decorator(func)
-
-
-def object_primitive(func=None, *, tags=None):
-    """
-    Decorator to apply a transformation directly to the object layer of an ArcState.
-    """
-
-    def _resolve_object(val: Any, obj: "ObjectState") -> dict:
-        return val.find_kwarg(obj) if isinstance(val, PropertyKwarg) else val
-
-    def decorator(inner_func):
-        @functools.wraps(inner_func)
-        def wrapper(state: ArcState, *args, **kwargs) -> ArcState:
-            transformed_objects = []
-            for obj in state.objects:
-                resolved_kwargs = {
-                    k: _resolve_object(v, obj) for k, v in kwargs.items()
-                }
-                transformed_objects.append(inner_func(obj, *args, **resolved_kwargs))
-            # Update grid state based on transformed objects
-            rows, cols = state.grid_state.dimensions
-            grid = np.zeros((rows, cols), dtype=int)
-            for obj in transformed_objects:
-                for r, c in obj.cell_positions:
-                    if 0 <= r < rows and 0 <= c < cols:
-                        grid[r, c] = obj.colour
-
-            new_grid_state = GridState.from_array(grid)
-            return ArcState(
-                grid_state=new_grid_state, objects=tuple(transformed_objects)
-            )
-
-        wrapper.tags = frozenset(tags or ())
-        OBJECT_PRIMITIVES.append(wrapper)
-        return wrapper
-
-    if func is None:
-        return decorator
-    return decorator(func)
-
-
-# TODO: Expand to more than just halves but split at non-midpoint too
-def split_grid_primitive(func=None, *, tags=None):
-    """
-    Decorator for transformations that operate on split grids.
-    """
-
-    def decorator(inner_func):
-        @functools.wraps(inner_func)
-        def wrapper(state: ArcState, split_axis: str) -> ArcState:
-            # Split the grid into halves or thirds
-            components = get_grid_splits(state.to_array(), split_type=split_axis)
-            if components is None:
-                return state
-            return ArcState.from_array(inner_func(components), extract_objects=True)
-
-        wrapper.tags = frozenset(tags or ())
-        SPLIT_GRID_PRIMITIVES.append(wrapper)
-        return wrapper
-
-    if func is None:
-        return decorator
-    return decorator(func)
 
 
 # -----------------------------------------------------------------------------
@@ -174,6 +52,9 @@ class ArcState:
         # Reconstruct grid from background and object layers
         rows, cols = self.grid_state.dimensions
         grid = np.zeros((rows, cols), dtype=int)
+        # Fill in the background colour
+        if self.grid_state.background_colour != 0:
+            grid.fill(self.grid_state.background_colour)
 
         # Overlay objects onto the grid based on their positions
         for obj in self.objects:
@@ -195,15 +76,15 @@ class ArcState:
         grid_size = g_state.dimensions
 
         if not extract_objects:
-            return cls(grid_state=g_state, objects=[])
+            return cls(grid_state=g_state, objects=tuple())
 
         # Object layer extraction using skimage regionprops
-        extracted_objects = []
+        extracted_objects = tuple()
         unique_colours = np.unique(array)
 
         for colour in unique_colours:
             # Skip background
-            if colour == 0:
+            if colour == g_state.background_colour:
                 continue
 
             # Create a binary mask for the specific colour
@@ -215,7 +96,7 @@ class ArcState:
                 obj_state = ObjectState.from_regionprops(
                     prop, colour=int(colour), grid_size=grid_size
                 )
-                extracted_objects.append(obj_state)
+                extracted_objects += (obj_state,)
 
         return cls(grid_state=g_state, objects=extracted_objects)
 
@@ -233,10 +114,12 @@ class ArcState:
         """
         obj_list = list(self.objects)
         obj_list[index] = new_obj_state
-        new_objects = obj_list
+        new_objects = tuple(obj_list)
 
         rows, cols = self.grid_state.dimensions
         grid = np.zeros((rows, cols), dtype=int)
+        if self.grid_state.background_colour != 0:
+            grid.fill(self.grid_state.background_colour)
         for obj in new_objects:
             positions = getattr(obj, "cell_positions", getattr(obj, "cell_pos", []))
             colour = getattr(obj, "colour", getattr(obj, "colour", 0))
@@ -260,6 +143,7 @@ class GridState:
     grid: GridArray
     dimensions: tuple[int, int]
     colours: frozenset[Colour]
+    background_colour: Colour
 
     # Symmetry properties
     horizontal_symmetry: bool
@@ -291,7 +175,10 @@ class GridState:
     def from_array(cls, array: np.ndarray) -> "GridState":
         grid = tuple(tuple(int(cell) for cell in row) for row in array)
         dimensions = array.shape
-        colours = frozenset(int(cell) for row in array for cell in row if cell != 0)
+        background_colour = cls.determine_background_colour(array)
+        colours = frozenset(
+            int(cell) for row in array for cell in row if cell != background_colour
+        )
 
         # Symmetry checks using np.flip..
         horizontal_symmetry = np.array_equal(array, np.flipud(array))
@@ -315,7 +202,38 @@ class GridState:
             rotational_symmetry_90=rotational_symmetry_90,
             rotational_symmetry_180=rotational_symmetry_180,
             rotational_symmetry_270=rotational_symmetry_270,
+            background_colour=background_colour,
         )
+
+    @staticmethod
+    def determine_background_colour(array: np.ndarray) -> int:
+        """
+        Determine the background colour of the grid.
+        If 0 is within the grid, it is considered the background colour.
+        Otherwise, get the most frequent colour on the edges of the grid as the background colour.
+        If a tie, return the colour that is at the edges of the grid.
+        """
+        values, counts = np.unique(array, return_counts=True)
+        if 0 in values:
+            return 0
+        modes = values[np.where(counts == np.max(counts))]
+        if len(modes) == 1:
+            return int(modes[0])
+        else:
+            edge_values = np.concatenate(
+                (
+                    [
+                        array[0, :],
+                        array[-1, :],
+                        array[:, 0],
+                        array[:, -1],
+                    ]
+                )
+            )
+
+            edge_values, edge_counts = np.unique(edge_values, return_counts=True)
+            edge_modes = edge_values[np.where(edge_counts == np.max(edge_counts))]
+            return int(edge_modes[0])
 
 
 # -----------------------------------------------------------------------------
@@ -375,6 +293,18 @@ class ObjectState:
         return self.bounding_box[3] - self.bounding_box[2] + 1
 
     @property
+    def size(self) -> tuple[int, int]:
+        return (self.height, self.width)
+    
+    @property
+    def x_coords(self) -> frozenset[int]:
+        return frozenset(col for _, col in self.cell_positions)
+    
+    @property
+    def y_coords(self) -> frozenset[int]:
+        return frozenset(row for row, _ in self.cell_positions)
+
+    @property
     def isolated_grid(self) -> np.ndarray:
         """
         Get the object in a new grid that has the size of the bounding box of the object.
@@ -415,16 +345,6 @@ class ObjectState:
             return False
         filled = ndimage.binary_fill_holes(mask)
         return not np.array_equal(mask, filled)
-
-    @property
-    def has_hole(self) -> bool:
-        """
-        Check if the object has a hole (not connected or has holes)
-        Use binary_fill_holes to fill any holes and compare with the original mask.
-        If they are not the same, then the object has a hole.
-        """
-        filled_mask = ndimage.binary_fill_holes(self.mask)
-        return not np.array_equal(self.mask, filled_mask)
 
     @classmethod
     def from_regionprops(
