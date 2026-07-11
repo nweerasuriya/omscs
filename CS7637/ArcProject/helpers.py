@@ -192,12 +192,16 @@ def exact_translation(
     return None
 
 
-def calculate_distance(obj1_coords: frozenset[tuple[int, int]], obj2_coords: frozenset[tuple[int, int]]) -> int:
+def calculate_distance(
+    obj1_coords: frozenset[tuple[int, int]], obj2_coords: frozenset[tuple[int, int]]
+) -> int:
     """
     Use Chebyshev distance as working with a grid.
     Scipy cdist can work on sets of pixels.
     """
-    return int(distance.cdist(list(obj1_coords), list(obj2_coords), metric="chebyshev").min())
+    return int(
+        distance.cdist(list(obj1_coords), list(obj2_coords), metric="chebyshev").min()
+    )
 
 
 def get_direction_vector(
@@ -207,3 +211,17 @@ def get_direction_vector(
         int(np.sign(centroid_2[0] - centroid_1[0])),
         int(np.sign(centroid_2[1] - centroid_1[1])),
     )
+
+
+def pixels_to_mask(
+    pixels: frozenset[tuple[int, int]], shape: tuple[int, int]
+) -> np.ndarray:
+    mask = np.zeros(shape, dtype=bool)
+    for r, c in pixels:
+        if 0 <= r < shape[0] and 0 <= c < shape[1]:
+            mask[r, c] = True
+    return mask
+
+
+def mask_to_pixels(mask: np.ndarray) -> frozenset[tuple[int, int]]:
+    return frozenset((int(r), int(c)) for r, c in np.argwhere(mask))

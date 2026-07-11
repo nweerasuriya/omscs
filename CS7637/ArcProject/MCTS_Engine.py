@@ -34,6 +34,7 @@ class DefaultSearchParams:
     exploration_constant: float = np.sqrt(2)
     search_depth: int = 10
     widening_factor: int = 2
+    temperature: float = 1.0
 
 
 DEFAULT_PARAMS = DefaultSearchParams()
@@ -104,7 +105,7 @@ class MCTSNode:
     def can_expand(self) -> bool:
         if not self.unvisited_actions:
             return False
-        # # Widen the search if the node has been visited a lot
+        # Widen the search if the node has been visited a lot
         # limit = self.params.widening_factor * ((self.visits + 1) ** 0.5)
         # return len(self.children) < limit
         return True
@@ -195,6 +196,7 @@ class MCTSNode:
         """
 
         while self.unvisited_actions:
+            # TODO: Use temperature to sample actions based on their prior probabilities instead of always taking the highest prior.
             action, prior = self.unvisited_actions.pop(0)
             try:
                 new_state = self.problem.apply_transformation(action, self.state)
@@ -299,9 +301,9 @@ class MCTSEngine:
         Find the highest reward node with ties broken by number of visits.
         """
         if self.solved_node is not None:
-            print(
-                f"Best program found with reward {self.solved_node.best_reward:.4f} and visits {self.solved_node.visits}"
-            )
+            # print(
+            #     f"Best program found with reward {self.solved_node.best_reward:.4f} and visits {self.solved_node.visits}"
+            # )
             return self.solved_node.program(), self.solved_node
 
         # Find the child node with the highest reward, breaking ties by depth
@@ -321,9 +323,9 @@ class MCTSEngine:
             stack.extend(node.children)
 
         # best_node.problem.candidate_report("fill_overlap_with_original_grid")
-        print(
-            f"Best program found with reward {best_node.best_reward:.4f} and visits {best_node.visits}"
-        )
+        # print(
+        #     f"Best program found with reward {best_node.best_reward:.4f} and visits {best_node.visits}"
+        # )
         # print("Input State:", best_node.state[0].grid_state.as_array)
         # print("Output State:", best_node.state[-1].grid_state.as_array)
         # print("Log for best node", best_node.skip_log)

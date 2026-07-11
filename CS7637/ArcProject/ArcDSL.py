@@ -11,30 +11,27 @@ __version__ = "0.1"
 from typing import Any
 
 import numpy as np
+from collections import Counter
 import scipy.ndimage as ndi
-from MemoryDecorators import (
-    grid_primitive,
-    object_primitive,
-    split_grid_primitive,
-)
+from MemoryDecorators import decorate_primitive
 from ArcMemory import (
     ObjectState,
     GridState,
     PixelSet,
 )
 from ArcPruning import Require, Effect
-from helpers import determine_new_obj_props
+from helpers import determine_new_obj_props, pixels_to_mask, mask_to_pixels
 
 
 # -----------------------------------------------------------------------------
 # Base Logical Operators
 # -----------------------------------------------------------------------------
-@grid_primitive
+@decorate_primitive("grid")
 def logic_not(array: np.ndarray) -> np.ndarray:
     return np.bitwise_not(array)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_and(array_list: list, fill_colour: int = 1) -> np.ndarray:
     """
     Perform logical AND operation. Keep original colours unless overlap occurs, then fill with fill_colour
@@ -44,7 +41,7 @@ def logic_and(array_list: list, fill_colour: int = 1) -> np.ndarray:
     return np.where(overlap_mask, fill_colour, combined)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_and_first_populated(array_list: list) -> np.ndarray:
     result = np.array(array_list[0])
     for array in array_list[1:]:
@@ -52,7 +49,7 @@ def logic_and_first_populated(array_list: list) -> np.ndarray:
     return result
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_or(array_list: list, fill_colour: int = 1) -> np.ndarray:
     """
     Perform logical OR operation. Keep original colours unless overlap occurs, then fill with fill_colour
@@ -62,7 +59,7 @@ def logic_or(array_list: list, fill_colour: int = 1) -> np.ndarray:
     return np.where(overlap_mask, fill_colour, combined)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_nand(array_list: list, fill_colour: int = 1) -> np.ndarray:
     """
     Perform logical NAND operation. Keep original colours unless overlap occurs, then fill with fill_colour
@@ -72,7 +69,7 @@ def logic_nand(array_list: list, fill_colour: int = 1) -> np.ndarray:
     return np.where(overlap_mask, fill_colour, combined)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_xor(array_list: list) -> np.ndarray:
     """
     Perform logical XOR operation. Keep original colours unless overlap occurs, then fill with fill_colour
@@ -83,7 +80,7 @@ def logic_xor(array_list: list) -> np.ndarray:
     return np.where(count == 1, colours, 0)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_nor(array_list: list, fill_colour: int = 1) -> np.ndarray:
     """
     Perform logical NOR operation. Keep original colours unless overlap occurs, then fill with fill_colour
@@ -93,37 +90,37 @@ def logic_nor(array_list: list, fill_colour: int = 1) -> np.ndarray:
     return np.where(overlap_mask, fill_colour, combined)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_and_(array_list: list, fill_colour: int = 1) -> np.ndarray:
     mask = np.logical_and.reduce([a != 0 for a in array_list])
     return np.where(mask, fill_colour, 0)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_or_(array_list: list, fill_colour: int = 1) -> np.ndarray:
     mask = np.logical_or.reduce([a != 0 for a in array_list])
     return np.where(mask, fill_colour, 0)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_nand_(array_list: list, fill_colour: int = 1) -> np.ndarray:
     mask = np.logical_and.reduce([a != 0 for a in array_list])
     return np.where(mask, 0, fill_colour)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_xor_(array_list: list) -> np.ndarray:
     mask = np.logical_xor.reduce([a != 0 for a in array_list])
     return np.where(mask, 1, 0)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_nor_(array_list: list, fill_colour: int = 1) -> np.ndarray:
     mask = np.logical_or.reduce([a != 0 for a in array_list])
     return np.where(mask, 0, fill_colour)
 
 
-@split_grid_primitive(tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
+@decorate_primitive("split_grid", tags={Require.SPLIT_GRID, Effect.GRID_SIZE})
 def logic_xnor_(array_list: list, fill_colour: int = 1) -> np.ndarray:
     mask = np.logical_xor.reduce([a != 0 for a in array_list])
     return np.where(mask, 0, fill_colour)
@@ -132,60 +129,60 @@ def logic_xnor_(array_list: list, fill_colour: int = 1) -> np.ndarray:
 # -----------------------------------------------------------------------------
 # Rotations and Flips
 # -----------------------------------------------------------------------------
-@grid_primitive()
+@decorate_primitive("grid")
 def rotate_grid(input_array: np.ndarray, quarter_turn: int) -> np.ndarray:
     return np.rot90(input_array, k=quarter_turn)
 
 
-@object_primitive()
+@decorate_primitive("object")
 def rotate_object(obj: ObjectState, quarter_turn: int) -> np.ndarray:
     rotated = np.rot90(obj.mask, k=quarter_turn)
     new_pixels = determine_new_obj_props(rotated, obj.centroid)
     return _update_object_state(obj, PixelSet(new_pixels))
 
 
-@grid_primitive()
+@decorate_primitive("grid")
 def flip_horizontal(input_array: np.ndarray) -> np.ndarray:
     return np.fliplr(input_array)
 
 
-@object_primitive()
+@decorate_primitive("object")
 def flip_object_horizontal(obj: ObjectState) -> ObjectState:
     flipped_grid = np.fliplr(obj.mask)
     new_pixels = determine_new_obj_props(flipped_grid, obj.centroid)
     return _update_object_state(obj, PixelSet(new_pixels))
 
 
-@grid_primitive()
+@decorate_primitive("grid")
 def flip_vertical(input_array: np.ndarray) -> np.ndarray:
     return np.flipud(input_array)
 
 
-@object_primitive()
+@decorate_primitive("object")
 def flip_object_vertical(obj: ObjectState) -> ObjectState:
     flipped_grid = np.flipud(obj.mask)
     new_pixels = determine_new_obj_props(flipped_grid, obj.centroid)
     return _update_object_state(obj, PixelSet(new_pixels))
 
 
-@grid_primitive(tags={Require.SQUARE_GRID})
+@decorate_primitive("grid", tags={Require.SQUARE_GRID})
 def flip_diagonal(input_array: np.ndarray) -> np.ndarray:
     return np.transpose(input_array)
 
 
-@object_primitive(tags={Require.SQUARE_GRID})
+@decorate_primitive("object", tags={Require.SQUARE_GRID})
 def flip_object_diagonal(obj: ObjectState) -> ObjectState:
     flipped_grid = np.transpose(obj.mask)
     new_pixels = determine_new_obj_props(flipped_grid, obj.centroid)
     return _update_object_state(obj, PixelSet(new_pixels))
 
 
-@grid_primitive(tags={Require.SQUARE_GRID})
+@decorate_primitive("grid", tags={Require.SQUARE_GRID})
 def flip_anti_diagonal(input_array: np.ndarray) -> np.ndarray:
     return np.fliplr(np.transpose(input_array))
 
 
-@object_primitive(tags={Require.SQUARE_GRID})
+@decorate_primitive("object", tags={Require.SQUARE_GRID})
 def flip_object_anti_diagonal(obj: ObjectState) -> ObjectState:
     flipped_grid = np.fliplr(np.transpose(obj.mask))
     new_pixels = determine_new_obj_props(flipped_grid, obj.centroid)
@@ -195,7 +192,7 @@ def flip_object_anti_diagonal(obj: ObjectState) -> ObjectState:
 # -----------------------------------------------------------------------------
 # Colour level functions
 # -----------------------------------------------------------------------------
-@grid_primitive(tags={Effect.GRID_SIZE, Effect.SHRINK})
+@decorate_primitive("grid", tags={Effect.GRID_SIZE, Effect.SHRINK})
 def crop_background_out(
     input_array: np.ndarray, background_color: int = 0
 ) -> np.ndarray:
@@ -208,7 +205,7 @@ def crop_background_out(
     return input_array[np.ix_(rows, cols)]
 
 
-@grid_primitive(tags={Effect.COLOUR})
+@decorate_primitive("grid", tags={Effect.COLOUR})
 def change_colour(
     input_array: np.ndarray, in_colour: int, out_colour: int
 ) -> np.ndarray:
@@ -216,7 +213,7 @@ def change_colour(
     return np.where(grid == in_colour, out_colour, grid)
 
 
-@grid_primitive(tags={Effect.COLOUR})
+@decorate_primitive("grid", tags={Effect.COLOUR})
 def update_colour(
     input_array: np.ndarray, new_colours: int, removed_colours: int
 ) -> np.ndarray:
@@ -228,7 +225,7 @@ def update_colour(
     return grid
 
 
-@grid_primitive(tags={Effect.COLOUR, Require.REMOVE_COLOURS})
+@decorate_primitive("grid", tags={Effect.COLOUR, Require.REMOVE_COLOURS})
 def remove_colours(
     input_array: np.ndarray, removed_colour_set: set[int], background_colour: int = 0
 ) -> np.ndarray:
@@ -241,7 +238,7 @@ def remove_colours(
     return grid
 
 
-@grid_primitive(tags={Effect.COLOUR})
+@decorate_primitive("grid", tags={Effect.COLOUR})
 def change_background_colour(input_array: np.ndarray, out_colour: int) -> np.ndarray:
     """
     Change the background colour of the input array to the new background colour.
@@ -251,7 +248,7 @@ def change_background_colour(input_array: np.ndarray, out_colour: int) -> np.nda
     return np.where(grid == current_background_colour, out_colour, grid)
 
 
-@grid_primitive(tags={Effect.COLOUR})
+@decorate_primitive("grid", tags={Effect.COLOUR})
 def fill_default_colour(
     input_array: np.ndarray, out_colour: int, default_colour: int = 1
 ) -> np.ndarray:
@@ -262,7 +259,7 @@ def fill_default_colour(
     return np.where(grid == default_colour, out_colour, grid)
 
 
-@grid_primitive(tags={Effect.COLOUR})
+@decorate_primitive("grid", tags={Effect.COLOUR})
 def invert_input_colours(
     input_array: np.ndarray, background_colour: int = 0
 ) -> np.ndarray:
@@ -285,7 +282,7 @@ def invert_input_colours(
     return grid
 
 
-@grid_primitive(tags={Effect.COLOUR})
+@decorate_primitive("grid", tags={Effect.COLOUR})
 def colour_grey_to_black(input_array: np.ndarray, grey: int = 5) -> np.ndarray:
     if not np.any(input_array == grey):
         return input_array
@@ -293,12 +290,12 @@ def colour_grey_to_black(input_array: np.ndarray, grey: int = 5) -> np.ndarray:
     return np.where(grid == grey, 0, grid)
 
 
-@object_primitive(tags={Effect.COLOUR})
+@decorate_primitive("object", tags={Effect.COLOUR})
 def recolour_object(obj: ObjectState, new_colour_obj: int) -> ObjectState:
     return obj._replace(colour=new_colour_obj)
 
 
-@grid_primitive(tags={Effect.COLOUR})
+@decorate_primitive("grid")
 def connect_same_colour(input_array: np.ndarray, out_colour: int) -> np.ndarray:
     """
     Connects pixels of the specified colour that are not connected by filling in the gaps between them.
@@ -354,7 +351,7 @@ def connect_same_colour(input_array: np.ndarray, out_colour: int) -> np.ndarray:
     return grid
 
 
-@grid_primitive(tags={Effect.COLOUR})
+@decorate_primitive("grid", tags={Effect.COLOUR})
 def fill_enclosed_area(
     input_array: np.ndarray,
     out_colour: int,
@@ -369,7 +366,7 @@ def fill_enclosed_area(
     return filled_array
 
 
-@grid_primitive(tags={Effect.COLOUR})
+@decorate_primitive("grid", tags={Effect.COLOUR})
 def fill_overlap_with_original_grid(
     input_array: np.ndarray,
     original_grid: GridState,
@@ -393,7 +390,7 @@ def fill_overlap_with_original_grid(
 # -----------------------------------------------------------------------------
 # Mirrors
 # -----------------------------------------------------------------------------
-@grid_primitive
+@decorate_primitive("grid")
 def mirror_horizontal(input_array: np.ndarray) -> np.ndarray:
     """
     Mirror the input array horizontally
@@ -401,7 +398,7 @@ def mirror_horizontal(input_array: np.ndarray) -> np.ndarray:
     return np.fliplr(input_array)
 
 
-@grid_primitive
+@decorate_primitive("grid")
 def mirror_vertical(input_array: np.ndarray) -> np.ndarray:
     """
     Mirror the input array vertically
@@ -409,7 +406,7 @@ def mirror_vertical(input_array: np.ndarray) -> np.ndarray:
     return np.flipud(input_array)
 
 
-@grid_primitive(tags={Require.SQUARE_GRID})
+@decorate_primitive("grid", tags={Require.SQUARE_GRID})
 def mirror_diagonal(input_array: np.ndarray) -> np.ndarray:
     """
     Mirror the input array diagonally, reflecting the pixels across the diagonal axis
@@ -417,7 +414,7 @@ def mirror_diagonal(input_array: np.ndarray) -> np.ndarray:
     return np.transpose(input_array)
 
 
-@grid_primitive(tags={Require.SQUARE_GRID})
+@decorate_primitive("grid", tags={Require.SQUARE_GRID})
 def mirror_anti_diagonal(input_array: np.ndarray) -> np.ndarray:
     """
     Mirror the input array anti-diagonally, reflecting the pixels across the anti-diagonal axis
@@ -428,7 +425,7 @@ def mirror_anti_diagonal(input_array: np.ndarray) -> np.ndarray:
 # -----------------------------------------------------------------------------
 # Other Grid Primitives
 # -----------------------------------------------------------------------------
-@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
+@decorate_primitive("grid", tags={Effect.GRID_SIZE, Effect.GROWTH})
 def pad_grid(
     input_array: np.ndarray, pad_width: int = 1, pad_value: int = 0
 ) -> np.ndarray:
@@ -440,7 +437,7 @@ def pad_grid(
     )
 
 
-@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
+@decorate_primitive("grid", tags={Effect.GRID_SIZE, Effect.GROWTH})
 def unfold_grid_vertical(input_array: np.ndarray, axis: int = 1) -> np.ndarray:
     """
     Unfolds the grid vertically, producing a new grid with the same number of rows but double the number of columns.
@@ -449,7 +446,7 @@ def unfold_grid_vertical(input_array: np.ndarray, axis: int = 1) -> np.ndarray:
     return np.concatenate((input_array, np.fliplr(input_array)), axis=axis)
 
 
-@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
+@decorate_primitive("grid", tags={Effect.GRID_SIZE, Effect.GROWTH})
 def unfold_grid_horizontal(input_array: np.ndarray, axis: int = 0) -> np.ndarray:
     """
     Unfolds the grid horizontally, producing a new grid with the same number of columns but double the number of rows.
@@ -458,7 +455,7 @@ def unfold_grid_horizontal(input_array: np.ndarray, axis: int = 0) -> np.ndarray
     return np.concatenate((input_array, np.flipud(input_array)), axis=axis)
 
 
-@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
+@decorate_primitive("grid", tags={Effect.GRID_SIZE, Effect.GROWTH})
 def unfold_half_grid_vertical(input_array: np.ndarray, axis: int = 1) -> np.ndarray:
     """
     Unfolds the grid vertically, producing a new grid with the same number of rows but double the number of columns.
@@ -469,7 +466,7 @@ def unfold_half_grid_vertical(input_array: np.ndarray, axis: int = 1) -> np.ndar
     return np.concatenate((left_half, np.fliplr(left_half)), axis=axis)
 
 
-@grid_primitive(tags={Effect.GRID_SIZE, Effect.GROWTH})
+@decorate_primitive("grid", tags={Effect.GRID_SIZE, Effect.GROWTH})
 def unfold_half_grid_horizontal(input_array: np.ndarray, axis: int = 0) -> np.ndarray:
     """
     Unfolds the grid horizontally, producing a new grid with the same number of columns but double the number of rows.
@@ -478,6 +475,40 @@ def unfold_half_grid_horizontal(input_array: np.ndarray, axis: int = 0) -> np.nd
     half_rows = input_array.shape[0] // 2
     top_half = input_array[:half_rows, :]
     return np.concatenate((top_half, np.flipud(top_half)), axis=axis)
+
+
+# @decorate_primitive("grid", tags={Effect.GRID_SIZE})
+# def slice_grid(input_array: np.ndarray, out_shape: tuple[int, int]) -> np.ndarray:
+#     """
+#     Slice the input array to the specified output shape.
+#     """
+#     return input_array[: out_shape[0], : out_shape[1]]
+
+
+# @decorate_primitive("grid", tags={Effect.GRID_SIZE})
+def reshape_grid(
+    input_array: np.ndarray, out_shape: tuple[int, int], background_colour: int
+) -> np.ndarray:
+    """
+    Resize the input array to the specified output shape.
+    If pixels spill over move them to the next row or column when output is smaller.
+    """
+    out_rows, out_cols = out_shape
+
+    flat_input = input_array.flatten()
+    non_zero_pixels = flat_input[flat_input != background_colour]
+
+    # Create a new output array filled with background colour
+    output_array = np.full(out_shape, background_colour, dtype=input_array.dtype)
+
+    # Fill with coloured pixels
+    for idx, pixel in enumerate(non_zero_pixels):
+        if idx < out_rows * out_cols:
+            row = idx // out_cols
+            col = idx % out_cols
+            output_array[row, col] = pixel
+
+    return output_array
 
 
 # -----------------------------------------------------------------------------
@@ -525,7 +556,7 @@ def _create_binary_grid_from_bbox(
 
 
 # TODO: Account for cells not bordering bounding box
-@object_primitive(tags={Effect.SHAPE})
+@decorate_primitive("object", tags={Effect.SHAPE})
 def fill_bounding_box(
     obj: ObjectState,
 ) -> ObjectState:
@@ -577,7 +608,7 @@ def fill_bounding_box(
 #     )
 
 
-@object_primitive(tags={Effect.SHAPE})
+@decorate_primitive("object", tags={Effect.SHAPE})
 def unfill_object(
     obj: ObjectState,
     background_colour: int = 0,
@@ -602,7 +633,7 @@ def unfill_object(
     return _update_object_state(obj, new_cell_positions)
 
 
-@object_primitive(tags={Effect.SHAPE})
+@decorate_primitive("object", tags={Effect.SHAPE})
 def remove_object(
     obj: ObjectState,
 ) -> ObjectState:
@@ -612,7 +643,7 @@ def remove_object(
     return _update_object_state(obj, PixelSet(set()))
 
 
-@object_primitive(tags={Effect.SHAPE})
+@decorate_primitive("object", tags={Effect.SHAPE})
 def crop_object(obj: ObjectState) -> ObjectState:
     """
     Crop the object to its bounding box
@@ -674,7 +705,7 @@ def crop_object(obj: ObjectState) -> ObjectState:
 #         return obj
 
 
-@object_primitive(tags={Effect.GROWTH, Require.DIRECTIONALITY})
+@decorate_primitive("object", tags={Effect.GROWTH, Require.DIRECTIONALITY})
 def add_line_to_object(
     obj: ObjectState,
     direction_vector: tuple[int, int] = (1, 0),
@@ -707,7 +738,7 @@ def add_line_to_object(
     return _update_object_state(obj, PixelSet(new_cell_positions))
 
 
-@object_primitive(tags={Effect.TRANSLATE, Require.DIRECTIONALITY})
+@decorate_primitive("object", tags={Effect.TRANSLATE, Require.DIRECTIONALITY})
 def translate_object(
     obj: ObjectState, direction_vector: tuple[int, int] = (1, 0), scale: int = 1
 ) -> ObjectState:
@@ -721,6 +752,94 @@ def translate_object(
         dx, dy = direction_vector
         new_cell_positions.add((x + scale * dx, y + scale * dy))
     return _update_object_state(obj, PixelSet(new_cell_positions))
+
+
+@decorate_primitive("object", tags={Require.DIRECTIONALITY, Effect.SHAPE})
+def extend_object(
+    obj: ObjectState, direction_vector: tuple[int, int], scale: int
+) -> ObjectState:
+    """
+    Extend the object in the specified direction by the scale factor
+    """
+    cell_positions = obj.cell_positions
+    new_cell_positions = set(cell_positions)
+    for cell in cell_positions:
+        x, y = cell
+        dx, dy = direction_vector
+        for i in range(1, scale + 1):
+            new_cell_positions.add((x + i * dx, y + i * dy))
+    return _update_object_state(obj, PixelSet(new_cell_positions))
+
+
+@decorate_primitive("object")
+def remove_single_pixels(
+    obj: ObjectState,
+) -> ObjectState:
+    """
+    If an object is a single pixel, remove it as an object state.
+    Return objects state with no cell positions
+    """
+    if obj.area == 1:
+        return _update_object_state(obj, PixelSet(set()))
+    else:
+        return obj
+
+
+# -----------------------------------------------------------------------------
+# Count based primitives
+# -----------------------------------------------------------------------------
+@decorate_primitive("state", tags={Effect.GRID_SIZE})
+def count_colours(
+    state: Any,
+    colour_count: Counter,
+    out_shape: tuple[int, int],
+    background_colour: int,
+) -> np.ndarray:
+    """
+    Use the colour counter to return a grid with the counts
+    Return as a horizontal line of pixels with a new row for each colour and the count as the length of the line
+    """
+    if not colour_count:
+        return None
+    rows = len(colour_count)
+    max_cols = max(colour_count.values())
+    output_array = np.zeros((rows, max_cols), dtype=int)
+    for i, (colour, count) in enumerate(colour_count.items()):
+        output_array[i, :count] = colour
+    # convert the output_array to the specified out_shape
+    reshaped_array = reshape_grid(output_array, out_shape, background_colour)
+    return reshaped_array
+
+
+@decorate_primitive("object", tags={Require.CLOSED_OBJECT})
+def fill_interior_colour(obj: ObjectState, colour_count: Counter) -> list[ObjectState]:
+    """
+    Fill the inside of an object with the most common colour found inside the object
+    Produce a new object state which is the filled area of the original object.
+    Return both the original object and the new filled object as a list of ObjectStates
+    """
+    if not colour_count:
+        return [obj]
+    most_common_colour = colour_count.most_common(1)[0][0]
+    # Use binary mask to fill in original object
+    mask = pixels_to_mask(obj.cell_positions, obj.grid_size)
+    fill_mask = ndi.binary_fill_holes(mask).astype(int)
+    fill_pixels = mask_to_pixels(fill_mask)
+    # remove the orginal object pixels from the interior pixels to get only the filled area
+    interior_pixels = fill_pixels - obj.cell_positions
+    new_cell_positions = set(interior_pixels)
+
+    new_object = ObjectState(
+        label_id=obj.label_id + 100,
+        colour=most_common_colour,
+        grid_size=obj.grid_size,
+        bounding_box=obj.bounding_box,
+        centroid=obj.centroid,
+        area=len(new_cell_positions),
+        cell_positions=PixelSet(new_cell_positions),
+        priority=obj.priority + 1,
+    )
+    return [obj, new_object]
 
 
 # -----------------------------------------------------------------------------

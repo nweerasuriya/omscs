@@ -17,7 +17,7 @@ __version__ = "0.1"
 import numpy as np
 from typing import Callable
 
-from MemoryDecorators import GRID_PRIMITIVES, OBJECT_PRIMITIVES
+from MemoryDecorators import all_primitives
 from ArcHeuristics import (
     ConservedAllSets,
     GridDifference,
@@ -32,6 +32,7 @@ class Require:
     SPLIT_GRID = "requires:split_grid"
     REMOVE_COLOURS = "requires:remove_colours"
     DIRECTIONALITY = "requires:directionality"
+    CLOSED_OBJECT = "requires:closed_object"
 
 
 class Effect:
@@ -164,6 +165,11 @@ class PruningEngine:
                 for obj in obj_list
             ),
             Require.SQUARE_GRID: heuristic_summary.conserved_properties.all_square_grid,
+            Require.CLOSED_OBJECT: any(
+                "filled" in obj.mutation_types
+                for obj_list in object_tran
+                for obj in obj_list
+            ),
         }
 
         UNKNOWN = 0.5
@@ -176,7 +182,7 @@ class PruningEngine:
             if primitive_tags.intersection(excluded_tags):
                 weights[primitive] = 0.0
                 continue
-            #weights[primitive] = 0.5
+            # weights[primitive] = 0.5
             if not primitive_tags:
                 weights[primitive] = UNTAGGED
                 continue

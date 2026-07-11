@@ -17,12 +17,13 @@ from ArcSet import ArcSet
 
 HU_TOLERANCE = 1
 # Mutation Related Parameters
-MUTATION_TYPES = ["growth", "shrink", "shape_change", "translation"]
+MUTATION_TYPES = ["growth", "shrink", "shape_change", "translation", "filled"]
 ASSOCIATION_KWARGS = [
     "direction_vector",
     "centroid_change",
     "scale",
     "new_colour_obj",
+    "filled",
 ]
 OBJECT_PROPERTIES = ["colour", "is_closed"]
 MIN_ASSOCIATION_SUPPORT = 2
@@ -80,6 +81,7 @@ class ObjectTransformation:
     position_changed: bool
     shape_changed: bool
     size_changed: bool
+    filled: bool
 
     mutation_types: list[str]
     direction_vector: tuple[int, int] = field(default_factory=lambda: (0, 0))
@@ -96,8 +98,9 @@ class PropertyAssociation:
 
     kwarg: str
     object_property: str
-    mapping: dict           # Maps object property values to the associated kwarg values
+    mapping: dict  # Maps object property values to the associated kwarg values
     support_score: float = 0.0
+
 
 @dataclass
 class ConservedAllSets:
@@ -151,7 +154,7 @@ class HeuristicEngine:
             input_state = ArcState.from_array(input_array, extract_objects=True)
             output_state = ArcState.from_array(output_array, extract_objects=True)
             self.state_cache[set_id] = {
-                "input": input_state, 
+                "input": input_state,
                 "output": output_state,
                 "input_graph": RelationalGraph(input_state),
                 "output_graph": RelationalGraph(output_state),
@@ -360,7 +363,7 @@ class HeuristicEngine:
                 set_id, i, o, input_object, output_state.objects[o]
             )
             transforms.append(transform)
-            #self._save_mutation(input_state, i, transform)
+            # self._save_mutation(input_state, i, transform)
 
         for i, input_object in enumerate(input_state.objects):
             if i in visited_input_objects:
@@ -393,7 +396,7 @@ class HeuristicEngine:
                     set_id, i, best_o, input_object, output_state.objects[best_o]
                 )
                 transforms.append(transform)
-                #self._save_mutation(input_state, i, transform)
+                # self._save_mutation(input_state, i, transform)
 
         return transforms
 
@@ -523,6 +526,13 @@ class HeuristicEngine:
                 int(np.sign(centroid_change[1])),
             )
 
+        # Check if object has been filled with a new colour
+        if "filled" in mutation_types:
+            # Check if empty pixels inside of the object have been filled with a new colour
+            empty_pixels = in_object.pixels - out_object.pixels
+            if empty_pixels:
+                mutation_types.append("filled")
+
         scale = self.mutation_scale(
             direction_vector,
             centroid_change,
@@ -542,6 +552,7 @@ class HeuristicEngine:
             position_changed=centroid_change != (0, 0),
             shape_changed=in_object.bounding_box != out_object.bounding_box,
             size_changed=len(input_pixels) != len(output_pixels),
+            filled=True if "filled" in mutation_types else False,
             mutation_types=mutation_types,
             direction_vector=direction_vector,
             centroid_change=centroid_change,
@@ -610,7 +621,6 @@ class HeuristicEngine:
                 ):
                     associations.append(association)
         return associations
-    
 
     # -----------------------------------------------------------------------------
     # Conserved properties analysis

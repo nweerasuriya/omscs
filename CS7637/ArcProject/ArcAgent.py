@@ -11,12 +11,7 @@ from ArcSearch import (
     breadth_first_search,
 )
 from ArcMemory import ArcState
-from MemoryDecorators import (
-    RELATIONAL_PRIMITIVES,
-    GRID_PRIMITIVES,
-    OBJECT_PRIMITIVES,
-    SPLIT_GRID_PRIMITIVES,
-)
+from MemoryDecorators import all_primitives
 from kwarg_engine import (
     build_kwarg_pool,
     iter_relevant_kwargs,
@@ -45,7 +40,7 @@ def run_mcts_engine(
     mcts_engine = MCTSEngine(root_node=root_node, iterations=1000)
     mcts_engine.search()
     if not root_node.children:
-        return MCTSResult(program=[], reward=0)
+        return MCTSResult(program=[], reward=0, problem=problem)
     best_program, best_node = mcts_engine.best_action()
     ranked_hypotheses: dict[tuple[Callable, ...], int] = {}
     ranked_hypotheses[tuple(best_program)] = best_node.best_reward
@@ -91,10 +86,10 @@ class ArcAgent:
         # )
         # print("Ranked Hypotheses: " + str(ranked_hypotheses))
         mcts_result = run_mcts_engine(sorted_primitives, kwarg_pool, training_data)
-        print(
-            "Final Primitives: "
-            + str([p.transformation.__name__ for p in mcts_result.program])
-        )
+        # print(
+        #     "Final Primitives: "
+        #     + str([p.transformation.__name__ for p in mcts_result.program])
+        # )
 
         return mcts_result
 
@@ -123,10 +118,7 @@ class ArcAgent:
         pruned_primitives, weighted_primitives = (
             self.pruning_engine.generate_candidate_primitives(
                 heuristic_summary,
-                GRID_PRIMITIVES
-                + OBJECT_PRIMITIVES
-                + SPLIT_GRID_PRIMITIVES
-                + RELATIONAL_PRIMITIVES,
+                all_primitives(),
             )
         )
         mcts_result = self.test_hypotheses(

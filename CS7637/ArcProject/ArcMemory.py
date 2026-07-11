@@ -261,11 +261,14 @@ class ObjectState:
     centroid: tuple[float, float]
     area: int
     cell_positions: PixelSet
-    hu_moments: HuMoments
+    hu_moments: HuMoments = field(default_factory=lambda: (0.0,) * 7)
 
     # mutation properties to be filled in heuristics analysis
     mutation_types: frozenset[str] = field(default_factory=frozenset)
     mutation_vectors: tuple[tuple[float, ...], ...] = field(default_factory=tuple)
+
+    # For overwriting priority in grid recreation
+    priority: int = 0
 
     def _replace(self, **kwargs) -> "ObjectState":
         """
@@ -295,11 +298,11 @@ class ObjectState:
     @property
     def size(self) -> tuple[int, int]:
         return (self.height, self.width)
-    
+
     @property
     def x_coords(self) -> frozenset[int]:
         return frozenset(col for _, col in self.cell_positions)
-    
+
     @property
     def y_coords(self) -> frozenset[int]:
         return frozenset(row for row, _ in self.cell_positions)
