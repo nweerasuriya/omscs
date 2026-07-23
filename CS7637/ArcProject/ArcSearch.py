@@ -121,8 +121,6 @@ class ArcSearch:
                 self.state_to_array(state), self.state_to_array(target)
             ):
                 return False
-
-        print("All states match the target states. Problem solved!")
         return True
 
     def candidate_transformations(self) -> list[BoundTransformation]:
@@ -160,20 +158,23 @@ class ArcSearch:
         return tuple(new_states)
 
     def predict(
-        self, input_array: np.ndarray, program: list[BoundTransformation]
-    ) -> np.ndarray:
+        self, input_array: np.ndarray, program_list: list[list[BoundTransformation]]
+    ) -> list[np.ndarray]:
         """
         Apply a sequence of transformations to the input array and return the predicted output array.
         """
         original_state = self.state_from_array(input_array)
         state = original_state
-        for action in program:
-            try:
-                state = action.apply(state, original_state)
-            except Exception as e:
-                print(f"Error in predict for {action.transformation.__name__}: {e}")
-                return None
-        return self.state_to_array(state)
+        predictions = []
+        for program in program_list:
+            for action in program:
+                try:
+                    state = action.apply(state, original_state)
+                except Exception as e:
+                    print(f"Error in predict for {action.transformation.__name__}: {e}")
+                    return None
+            predictions.append(self.state_to_array(state))
+        return predictions
 
     def _calculate_baseline_error(self) -> float:
         """
@@ -185,6 +186,7 @@ class ArcSearch:
                 self.grid_diff_error(
                     self.state_to_array(input_state), self.state_to_array(target_state)
                 )
+                # + 0.5 * self.object_diff_error(input_state, target_state)
             )
         return sum(baseline_error) / max(len(baseline_error), 1)
 
@@ -230,6 +232,16 @@ class ArcSearch:
 
         return 0.5 * shape_penalty + 0.5 * norm_pixel_diff
 
+    @staticmethod
+    def object_diff_error(predicted: ArcState, target: ArcState) -> float:
+        """
+        Calculates error in the object differences between the predicted output and the actual output.
+        Check for number, colour and size differences between the objects in the predicted and target states.
+        Do pairwise comparison by checking if target object is in the predicted objects
+        Return a normalised error between 0 and 1, where 0 is a perfect match and 1 is a complete mismatch.
+        """
+        pass
+
     def evaluate_cost(
         self, states: list[ArcState], depth: int = 0, complexity_penalty: float = 0.0
     ) -> float:
@@ -243,24 +255,29 @@ class ArcSearch:
                 f"Warning: Length of states ({len(states)}) does not match length of target states ({len(self._target_state)})."
             )
             return 1.0  # Return maximum error if lengths do not match
-        error = sum(
-            self.grid_diff_error(
+
+        error = 0.0
+        for state, target in zip(states, self._target_state):
+            grid_error = self.grid_diff_error(
                 self.state_to_array(state), self.state_to_array(target)
             )
-            for state, target in zip(states, self._target_state)
-        ) / max(len(states), 1)
+            # obj_error = self.object_diff_error(state, target)
+            error += grid_error
+
+        error = error / len(states)  # Average error over all states
+
         # Check if input state is the same as target state
         if self.baseline_error < 1e-6:
             norm_error = error
         else:
             norm_error = error / self.baseline_error
 
-        if depth > 10:
+        if depth > 5:
             complexity_penalty = complexity_penalty * depth // 2
         else:
             complexity_penalty = 0.0
         return norm_error + complexity_penalty
-    
+
 
 def breadth_first_search(
     sorted_primitives: list[Tuple[Callable, float]],

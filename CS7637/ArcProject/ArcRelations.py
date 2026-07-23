@@ -37,33 +37,20 @@ dir_coord = tuple[int, int]
 SPATIAL_TARGETS = (
     "nearest",
     "nearest_same_colour",
+    "nearest_not_same_colour",
+    "nearest_line_same_colour",
+    "nearest_line_not_same_colour",
+    "aligned_vertical_horizontal",
+    # "largest_same_colour",
+    # "smallest_same_colour",
     "container",
 )
 
 KWARG_SPACE: dict[str, tuple[tuple[str, str], ...]] = {
     "direction_vector": tuple(("direction_to", t) for t in SPATIAL_TARGETS),
     "scale": tuple(("steps_away_from", t) for t in SPATIAL_TARGETS),
-    "colour_count": (("colour_count_match", "any"),),
+    "colour_count": tuple(("colour_count_match", t) for t in ["any", "container"]),
 }
-
-RELATION_FIELDS = (
-    "touching",
-    "row_overlap",
-    "col_overlap",
-    "aligned_vertical",
-    "aligned_horizontal",
-    "same_colour",
-    "same_size",
-)
-
-
-def _resolve_relation_fields(pair: "ObjectPairs", relation_str: str) -> bool:
-    """
-    Given a pair of objects and a relation string, return the boolean value of that relation.
-    """
-    if relation_str == "touching":
-        return pair.distance <= 1
-    return bool(getattr(pair, relation_str))
 
 
 @dataclass(frozen=True)
@@ -101,7 +88,7 @@ class RelationalGraph:
         ]  # Filter out objects with no cell positions
 
         self.object_count = len(self.filtered_objects)
-        self.colour_counts = Counter(obj.colour for obj in self.filtered_objects)
+        self.colour_counts = self.state.grid_state.colour_counts
         self.interior_pixels = [
             self._get_interior_pixels(obj) for obj in self.filtered_objects
         ]
@@ -133,8 +120,9 @@ class RelationalGraph:
         distance_calc = calculate_distance(obj1.cell_positions, obj2.cell_positions)
 
         bbox_1, bbox_2 = obj1.bounding_box, obj2.bounding_box
-        row_overlap = (bbox_1[0] <= bbox_2[1]) and (bbox_2[0] <= bbox_1[1])
-        col_overlap = (bbox_1[2] <= bbox_2[3]) and (bbox_2[2] <= bbox_1[3])
+        # bbox is min_row, min_col, max_row, max_col
+        row_overlap = not (bbox_1[2] < bbox_2[0] or bbox_2[2] < bbox_1[0])
+        col_overlap = not (bbox_1[3] < bbox_2[1] or bbox_2[3] < bbox_1[1])
 
         aligned_vertical = obj1.x_coords == obj2.x_coords
         aligned_horizontal = obj1.y_coords == obj2.y_coords
@@ -180,28 +168,73 @@ class RelationalGraph:
             )
             return [nearest_obj]
 
+        if reason == "nearest_not_same_colour":
+            not_same_colour_candidates = [
+                other_id
+                for other_id in candidates
+                if not self.pairs[(obj_id, other_id)].same_colour
+            ]
+            if not not_same_colour_candidates:
+                return None
+            nearest_obj = min(
+                not_same_colour_candidates,
+                key=lambda other_id: self.pairs[(obj_id, other_id)].distance,
+            )
+            return [nearest_obj]
+
+        # Nearest line refers to another object that has a pixels in a straight line >4 pixels in size
+        if reason == "nearest_line_same_colour":
+            line_candidates = [
+                other_id
+                for other_id in candidates
+                if self.pairs[(obj_id, other_id)].same_colour
+                and self._lookup_obj(other_id).has_line
+            ]
+            if not line_candidates:
+                return None
+            nearest_obj = min(
+                line_candidates,
+                key=lambda other_id: self.pairs[(obj_id, other_id)].distance,
+            )
+            return [nearest_obj]
+
+        if reason == "nearest_line_not_same_colour":
+            line_candidates = [
+                other_id
+                for other_id in candidates
+                if not self.pairs[(obj_id, other_id)].same_colour
+                and self._lookup_obj(other_id).has_line
+            ]
+            if not line_candidates:
+                return None
+            nearest_obj = min(
+                line_candidates,
+                key=lambda other_id: self.pairs[(obj_id, other_id)].distance,
+            )
+            return [nearest_obj]
+
         # Aligned object selection
-        if reason == "aligned_vertical":
+        if reason == "aligned_vertical_horizontal":
             aligned_candidates = [
                 other_id
                 for other_id in candidates
                 if self.pairs[(obj_id, other_id)].aligned_vertical
-            ]
-            if not aligned_candidates:
-                return None
-            return aligned_candidates
-        if reason == "aligned_horizontal":
-            aligned_candidates = [
-                other_id
-                for other_id in candidates
-                if self.pairs[(obj_id, other_id)].aligned_horizontal
+                or self.pairs[(obj_id, other_id)].aligned_horizontal
             ]
             if not aligned_candidates:
                 return None
             return aligned_candidates
 
         if reason == "container":
-            pass
+            container_candidates = [
+                other_id
+                for other_id in candidates
+                if self.is_container(other_id)
+                and obj_id in self.interior_pixels[other_id]
+            ]
+            if not container_candidates:
+                return None
+            return container_candidates
         return None
 
     def move_to_target(
@@ -232,7 +265,13 @@ class RelationalGraph:
         """
         Get the interior pixels of an object
         """
-        mask = pixels_to_mask(object.cell_positions, self.state.grid_state.dimensions)
+        rows, cols = self.state.grid_state.dimensions
+        inside = frozenset(
+            (r, c)
+            for (r, c) in object.cell_positions
+            if 0 <= r < rows and 0 <= c < cols
+        )
+        mask = pixels_to_mask(inside, self.state.grid_state.dimensions)
         fill_mask = ndimage.binary_fill_holes(mask).astype(int)
         return mask_to_pixels(fill_mask)
 
@@ -252,109 +291,21 @@ class RelationalGraph:
             del counter[obj_colour]
         return counter
 
-
-class RelationalDiff:
-    """
-    Comparison of two relational graphs to identify changes in relationships between objects.
-    """
-
-    def __init__(
-        self,
-        input_graph: RelationalGraph,
-        output_graph: RelationalGraph,
-        obj_matches: list[tuple[int, int]],
-    ):
-        self.input_graph = input_graph
-        self.output_graph = output_graph
-        # check if objects are in filtered objects of both graphs
-        self.obj_matches = [
-            (i, o)
-            for i, o in obj_matches in input_graph.filtered_objects
-            and output_graph.filtered_objects
-        ]
-        self.obj_mapping = {i: o for i, o in self.obj_matches}
-
-        self.conserved: set[tuple[str, str]] = set()
-        self.removed: set[tuple[str, str]] = set()
-        self.added: set[tuple[str, str]] = set()
-
-    def _compare_relationships(
-        self,
-        input_pair: ObjectPairs,
-        output_pair: ObjectPairs,
-        target_relation: str,
-        conserved: set,
-        removed: set,
-        added: set,
-    ) -> None:
+    def is_container(self, obj_id: int) -> bool:
         """
-        Run comparison between graphs for specified relations
+        Check if an object encloses any other object based on its interior pixels and the cell positions of other objects.
         """
-        if input_pair is None or output_pair is None:
-            return
-        for relation in RELATION_FIELDS:
-            input_value = _resolve_relation_fields(input_pair, relation)
-            output_value = _resolve_relation_fields(output_pair, relation)
-            if input_value and output_value:
-                conserved.add((relation, target_relation))
-            elif input_value and not output_value:
-                removed.add((relation, target_relation))
-            elif not input_value and output_value:
-                added.add((relation, target_relation))
-
-    def pairwise_diff(
-        self,
-        conserved: set,
-        removed: set,
-        added: set,
-    ):
-        """
-        Summarise how relationships between objects have changed from input to output graph.
-        """
-        for pair_1 in self.obj_matches:
-            for pair_2 in self.obj_matches:
-                if pair_1[0] == pair_2[0]:
-                    continue
-                input_pair = self.input_graph.pairs.get(pair_1[0], pair_2[0])
-                output_pair = self.output_graph.pairs.get(pair_1[1], pair_2[1])
-                self._compare_relationships(
-                    input_pair,
-                    output_pair,
-                    target_relation="any",
-                    conserved=conserved,
-                    removed=removed,
-                    added=added,
-                )
-
-    def specific_target_diff(
-        self,
-        conserved: set,
-        removed: set,
-        added: set,
-    ):
-        """
-        Summarise how relationships between objects have changed from input to output graph for a specific target relation.
-        """
-        for pair_1 in self.obj_matches:
-            for reason in SPATIAL_TARGETS:
-                targets = self.input_graph.select_target_object(pair_1[0], reason)
-
-                if not targets or len(targets) != 1:
-                    continue
-
-                target_in = targets[0]
-                target_out = self.obj_mapping.get(target_in)
-                if target_out is None:
-                    continue
-
-                self._compare_relationships(
-                    self.input_graph.pairs.get((pair_1[0], target_in)),
-                    self.output_graph.pairs.get((pair_1[1], target_out)),
-                    target_relation=reason,
-                    conserved=conserved,
-                    removed=removed,
-                    added=added,
-                )
+        interior_pixels = set(self.interior_pixels[obj_id]) - set(
+            self.filtered_objects[obj_id].cell_positions
+        )
+        if not interior_pixels:
+            return False
+        for i in range(self.object_count):
+            if i == obj_id:
+                continue
+            if set(self.filtered_objects[i].cell_positions) & interior_pixels:
+                return True
+        return False
 
 
 @dataclass(frozen=True)
@@ -378,9 +329,15 @@ class RelationalKwarg:
             return self.default_value
 
         if self.query == "colour_count_match":
-            interior_count = graph.interior_colour_count(index)
-            return interior_count if interior_count else self.default_value
-
+            if self.target == "container":
+                interior_count = graph.interior_colour_count(index)
+                return interior_count if interior_count else self.default_value
+            elif self.target == "any":
+                # Otherwise return object colour count ordered by ascending count
+                obj_colour_count = graph.colour_counts.copy()
+                if graph.background_colour in obj_colour_count:
+                    del obj_colour_count[graph.background_colour]
+                return obj_colour_count if obj_colour_count else self.default_value
         moveset = graph.move_to_target(index, self.target)
         # aligned_objs = graph.aligned_targets(index, self.target)
         if moveset is not None:
@@ -460,6 +417,7 @@ def detect_counter_related_outputs(
     """
     output_grid = out_state.grid_state.grid
     out_colour_count = Counter(np.array(output_grid).flatten())
+    colour_count_list = []
     # Remove background colour from the count
     if input_graph.background_colour in out_colour_count:
         del out_colour_count[input_graph.background_colour]
@@ -472,15 +430,15 @@ def detect_counter_related_outputs(
             continue
         output_count = out_colour_count.get(colour)
         if output_count == count:
-            return [
+            colour_count_list.append(
                 {
                     "colour_count": RelationalKwarg(
                         query="colour_count_match",
-                        target="any",
+                        target="container",
                         default_value=out_colour_count,
                     )
                 }
-            ]
+            )
 
     # 2. Object colour count
     object_colour_count = Counter(obj.colour for obj in input_graph.filtered_objects)
@@ -489,7 +447,7 @@ def detect_counter_related_outputs(
             continue
         output_count = out_colour_count.get(colour)
         if output_count == count:
-            return [
+            colour_count_list.append(
                 {
                     "colour_count": RelationalKwarg(
                         query="colour_count_match",
@@ -497,8 +455,8 @@ def detect_counter_related_outputs(
                         default_value=out_colour_count,
                     )
                 }
-            ]
-    return []
+            )
+    return colour_count_list
 
 
 def collect_relation_scores(
@@ -538,3 +496,102 @@ def collect_relation_scores(
                 for k, rel_k in rel_kwarg.items():
                     support_scores[(k, rel_k.query, rel_k.target)] += 1
     return dict(support_scores)
+
+
+# -----------------------------------------------------------------------------
+# Object Selection
+# -----------------------------------------------------------------------------
+
+SELECT_REASONS: dict[str, callable] = {
+    "any": lambda graph, i: True,
+    "smallest": lambda graph, i: graph.filtered_objects[i].area
+    == min(obj.area for obj in graph.filtered_objects),
+    "largest": lambda graph, i: graph.filtered_objects[i].area
+    == max(obj.area for obj in graph.filtered_objects),
+    "is_closed": lambda graph, i: graph.filtered_objects[i].is_closed,
+    "container": lambda graph, i: graph.is_container(i),
+}
+
+
+@dataclass(frozen=True)
+class ObjectSelector:
+    """
+    Select objects from a relational graph based on specific criteria.
+    """
+
+    reason: str
+    support_score: float = 0.0
+    needs_graph: bool = True
+
+    def select_obj_id(self, graph: RelationalGraph) -> frozenset[int]:
+        """
+        Select objects from the relational graph based on the specified reason.
+        """
+        if self.reason not in SELECT_REASONS:
+            return frozenset(
+                range(graph.object_count)
+            )  # Return all objects if reason is invalid
+        return frozenset(
+            i
+            for i in range(graph.object_count)
+            if SELECT_REASONS[self.reason](graph, i)
+        )
+
+    def select_objects(self, graph: RelationalGraph) -> list[ObjectState]:
+        """
+        Select objects from the relational graph based on the specified reason.
+        """
+        selected_ids = self.select_obj_id(graph)
+        return [graph.filtered_objects[i] for i in selected_ids]
+
+
+def collect_object_selection_scores(
+    state_cache: dict, obj_transformations: list[list[Any]]
+) -> dict:
+    """
+    Collect object selection scores for each transformation based on the relational graph.
+    """
+    support_scores: Counter = Counter()
+    for obj_list in obj_transformations:
+        changes_by_set = {}
+        for obj_t in obj_list:
+            changed = changes_by_set.setdefault(obj_t.set_id, set())
+            if (
+                obj_t.position_changed
+                or obj_t.colour_changed
+                or obj_t.size_changed
+                or obj_t.shape_changed
+            ):
+                changed.add(obj_t.input_object_id)
+            for obj_id, changed in changes_by_set.items():
+                if not changed:
+                    continue
+                cache_entry = state_cache.get(obj_id)
+                if not cache_entry or "input_graph" not in cache_entry:
+                    continue
+                input_graph = cache_entry["input_graph"]
+                target = frozenset(changed)
+                for reason in SELECT_REASONS:
+                    if reason == "any":
+                        continue
+                    if target == ObjectSelector(reason=reason).select_obj_id(
+                        input_graph
+                    ):
+                        support_scores[(reason, "object_selector")] += 1
+    return dict(support_scores)
+
+
+def add_object_selection_kwargs(
+    pool: dict[str, set], selection_scores: dict = None
+) -> None:
+    """
+    Add object selection kwargs to the kwarg pool based on the collected selection scores.
+    """
+    support_scores = selection_scores if selection_scores is not None else {}
+    for reason in SELECT_REASONS:
+        if reason == "any":
+            continue
+        support_score = support_scores.get((reason, "object_selector"), 0.0)
+        pool.setdefault("object_selector", set()).add(
+            ObjectSelector(reason=reason, support_score=support_score)
+        )

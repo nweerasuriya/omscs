@@ -37,15 +37,13 @@ def run_mcts_engine(
         state_to_array=lambda state: state.grid_state.as_array,
     )
     root_node = MCTSNode(problem=problem, state=problem._input_state, depth=0)
-    mcts_engine = MCTSEngine(root_node=root_node, iterations=1000)
+    mcts_engine = MCTSEngine(root_node=root_node, iterations=4000)
     mcts_engine.search()
     if not root_node.children:
-        return MCTSResult(program=[], reward=0, problem=problem)
+        return MCTSResult(program=[], best_reward=0, problem=problem)
     best_program, best_node = mcts_engine.best_action()
-    ranked_hypotheses: dict[tuple[Callable, ...], int] = {}
-    ranked_hypotheses[tuple(best_program)] = best_node.best_reward
     return MCTSResult(
-        program=best_program, reward=best_node.best_reward, problem=problem
+        program=best_program, best_reward=best_node.best_reward, problem=problem
     )
 
 
@@ -81,15 +79,18 @@ class ArcAgent:
         # print(
         #     f"All Primitives: {[p.__name__ + ' weight: ' + str(weight) for p, weight in weighted_primitives.items()]}"
         # )
+        # sorted_primitives = [(add_new_obj_line, 1.0)]
         # ranked_hypotheses = breadth_first_search(
         #     sorted_primitives, kwarg_pool, training_data
         # )
         # print("Ranked Hypotheses: " + str(ranked_hypotheses))
         mcts_result = run_mcts_engine(sorted_primitives, kwarg_pool, training_data)
-        # print(
-        #     "Final Primitives: "
-        #     + str([p.transformation.__name__ for p in mcts_result.program])
-        # )
+        for i in range(len(mcts_result.program)):
+            print(
+                f"Final Primitives {i}: "
+                + str([p.transformation.__name__ for p in mcts_result.program[i]])
+            )
+        print(f"Best Reward: {mcts_result.best_reward}")
 
         return mcts_result
 
@@ -112,9 +113,8 @@ class ArcAgent:
         print("Analysing Problem: " + arc_problem.problem_name())
         input_test = arc_problem.test_set().get_input_data()
 
-        predictions: list[np.ndarray] = list()
-
         heuristic_summary = self.heuristics.run_analysis(arc_problem.training_set())
+        # print(f"Heuristic Summary: {heuristic_summary}, ")
         pruned_primitives, weighted_primitives = (
             self.pruning_engine.generate_candidate_primitives(
                 heuristic_summary,
@@ -125,8 +125,6 @@ class ArcAgent:
             heuristic_summary, weighted_primitives, arc_problem.training_set()
         )
 
-        prediction = mcts_result.predict(input_test.data())
-
-        predictions.append(prediction)
+        predictions = mcts_result.predict(input_test.data())
 
         return predictions

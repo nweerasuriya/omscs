@@ -1,8 +1,8 @@
 """
 MCTS Node
 
-1. Selection - Starting at the parent node, select the child node with the UCB1 value until a leaf node is reached.
-    UCB1 is the upper confidence bound for trees, which balances exploration and exploitation.
+1. Selection - Starting at the parent node, select the child node with the PUCT value until reaching a leaf node.
+    PUCT is a scoring function that balances exploration and exploitation whilst incorporating prior probabilities from the heuristic engine.
 2. Expansion - If the leaf node is not a terminal state, expand the node by adding a new child node when choosing an unvisited action.
 3. Evaluation - Evaluate the new child node by applying the sequence of transformations to the input state and calculating the reward based on the cost function.
 4. Backpropagation - Using result from the evaluation, update the statistics of all nodes in the path from the new child node to the parent node.
@@ -31,8 +31,8 @@ class DefaultSearchParams:
 
     error_weight: float = 1.0
     complexity_weight: float = 0.1
-    exploration_constant: float = np.sqrt(2)
-    search_depth: int = 10
+    exploration_constant: float = 2.0
+    search_depth: int = 4
     widening_factor: int = 2
     temperature: float = 1.0
 
@@ -42,13 +42,14 @@ DEFAULT_PARAMS = DefaultSearchParams()
 
 @dataclass
 class MCTSResult:
-    program: List[BoundTransformation]
-    reward: float
+    program: List[List[BoundTransformation]]
+    best_reward: float
     problem: ArcSearch
 
-    def predict(self, input_array: np.ndarray) -> np.ndarray:
+    def predict(self, input_array: np.ndarray) -> list[np.ndarray]:
         """
         Apply the sequence of transformations to the input array and return the predicted output array.
+        Return up to 3 predicted outputs if there are multiple programs.
         """
         return self.problem.predict(input_array, self.program)
 
@@ -105,8 +106,9 @@ class MCTSNode:
     def can_expand(self) -> bool:
         if not self.unvisited_actions:
             return False
+        # TODO: When transformation library becomes too big, add the widening factor
         # Widen the search if the node has been visited a lot
-        # limit = self.params.widening_factor * ((self.visits + 1) ** 0.5)
+        # limit = self.params.widening_factor * (self.visits + 1)
         # return len(self.children) < limit
         return True
 
@@ -119,11 +121,14 @@ class MCTSNode:
         """
         if self._unvisited_actions is None:
             candidates = self.problem.candidate_transformations()
-            total_prior = sum(max(can.prior, 0) for can in candidates)
-            if total_prior > 0:
+            weights = [
+                max(can.prior, 0) ** (1 / self.params.temperature) for can in candidates
+            ]
+            total_weight = sum(weights)
+            if total_weight > 0:
                 # get max prior first
                 new_pair = [
-                    (can, max(can.prior, 0) / total_prior) for can in candidates
+                    (can, w / total_weight) for can, w in zip(candidates, weights)
                 ]
             elif candidates:
                 # No positive priors, so just normalise to uniform distribution
@@ -295,7 +300,7 @@ class MCTSEngine:
             current_node = current_node.select_child()
         return current_node
 
-    def best_action(self) -> Tuple[List[BoundTransformation], MCTSNode]:
+    def best_action(self) -> Tuple[List[List[BoundTransformation]], MCTSNode]:
         """
         Return the best actions from the root node after MCTS search.
         Find the highest reward node with ties broken by number of visits.
@@ -304,29 +309,29 @@ class MCTSEngine:
             # print(
             #     f"Best program found with reward {self.solved_node.best_reward:.4f} and visits {self.solved_node.visits}"
             # )
-            return self.solved_node.program(), self.solved_node
+            return [self.solved_node.program()], self.solved_node
 
         # Find the child node with the highest reward, breaking ties by depth
         best_node = self.root_node
         stack = [self.root_node]
+        best_node_list = []
         while stack:
             node = stack.pop()
-            if (
-                node.best_reward > best_node.best_reward
-                or (
-                    node.best_reward == best_node.best_reward
-                    and node.depth <= best_node.depth
-                )
-                or best_node == self.root_node
+            if (node.best_reward > best_node.best_reward) or (
+                node.best_reward == best_node.best_reward
             ):
-                best_node = node
+                best_node_list.append(
+                    {"node": node, "depth": node.depth, "reward": node.best_reward}
+                )
             stack.extend(node.children)
+        # Order list by best reward and lowest depth
+        best_node_list.sort(key=lambda x: (-x["reward"], x["depth"]))
+        # Return the first 3 pregrams with the highest reward and lowest depth
+        best_node = best_node_list[0]["node"]
+        program_list = [x["node"].program() for x in best_node_list[:4]]
+        program_list = [p for p in program_list if p]
 
-        # best_node.problem.candidate_report("fill_overlap_with_original_grid")
-        # print(
-        #     f"Best program found with reward {best_node.best_reward:.4f} and visits {best_node.visits}"
-        # )
         # print("Input State:", best_node.state[0].grid_state.as_array)
         # print("Output State:", best_node.state[-1].grid_state.as_array)
         # print("Log for best node", best_node.skip_log)
-        return best_node.program(), best_node
+        return program_list, best_node

@@ -112,13 +112,26 @@ def _build_object_wrapper(inner_func: Callable):
     """
 
     @functools.wraps(inner_func)
-    def wrapper(state: ArcState, *args, **kwargs) -> ArcState:
+    def wrapper(state: ArcState, object_selector=None, *args, **kwargs) -> ArcState:
         graph = None
         # Build graph if necessary
-        if any(hasattr(v, "needs_graph") for v in kwargs.values()):
-            graph = RelationalGraph(state)
+        needs_graph = (
+            object_selector is not None
+            and getattr(object_selector, "needs_graph", False)
+        ) or any(hasattr(v, "needs_graph") for v in kwargs.values())
+        graph = RelationalGraph(state) if needs_graph else None
+
+        selected_objects = (
+            object_selector.select_objects(graph) if object_selector else None
+        )
+
         transformed_objects = []
         for obj in state.objects:
+            # Skip objects that are not selected
+            if selected_objects is not None and obj not in selected_objects:
+                transformed_objects.append(obj)
+                continue
+
             # Resolve kwargs for the current object
             resolved_kwargs = {
                 k: (
@@ -145,6 +158,21 @@ def _build_object_wrapper(inner_func: Callable):
 
         # Update grid state based on transformed objects
         rows, cols = state.grid_state.dimensions
+        # drop any pixels that are out of bounds
+        in_objects = []
+        for obj in transformed_objects:
+            inside_bounds = frozenset(
+                (r, c) for r, c in obj.cell_positions if 0 <= r < rows and 0 <= c < cols
+            )
+            if not inside_bounds:
+                continue
+            in_objects.append(
+                obj
+                if inside_bounds == obj.cell_positions
+                else obj.with_pixels(inside_bounds)
+            )
+        transformed_objects = in_objects
+
         grid = np.zeros((rows, cols), dtype=int)
         if state.grid_state.background_colour != 0:
             grid.fill(state.grid_state.background_colour)
@@ -212,9 +240,6 @@ def _build_state_wrapper(inner_func: Callable):
                 )
             else:
                 resolved_kwargs[k] = None
-        from collections import Counter
-
-        colour_count = resolved_kwargs.get("colour_count", None)
         result = inner_func(state, *args, **resolved_kwargs)
         if isinstance(result, ArcState):
             return result

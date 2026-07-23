@@ -25,7 +25,11 @@ ASSOCIATION_KWARGS = [
     "new_colour_obj",
     "filled",
 ]
-OBJECT_PROPERTIES = ["colour", "is_closed"]
+OBJECT_PROPERTIES = [
+    "colour",
+    "is_closed",
+    "pointed_direction",
+]
 MIN_ASSOCIATION_SUPPORT = 2
 
 
@@ -40,6 +44,9 @@ class GridDifference:
     # Shape
     input_shape: tuple[int, int]
     output_shape: tuple[int, int]
+    empty_input: bool
+    empty_top_half: bool
+    empty_bottom_half: bool
 
     # Object count
     input_object_count: int
@@ -52,6 +59,9 @@ class GridDifference:
     new_colours: set[int]
     removed_colours: set[int]
     colour_changed: bool
+    empty_rows_cols_changed: bool
+    background_colour_change: bool
+    black_present: bool
 
     # Symmetry differences
     input_symmetry_h: bool
@@ -63,6 +73,10 @@ class GridDifference:
     input_symmetry_anti_diag: bool
     output_symmetry_anti_diag: bool
     symmetry_changed: bool
+
+    # Properties
+    single_pixels: bool
+    multi_objects: bool
 
 
 @dataclass
@@ -115,6 +129,10 @@ class ConservedAllSets:
     object_shapes: bool
     all_square_grid: bool
 
+    row_size: bool
+    col_size: bool
+    row_col_scale: Optional[int] = None
+
 
 @dataclass
 class HeuristicSummary:
@@ -141,6 +159,7 @@ class HeuristicEngine:
         """
         Runs heuristic analysis on the training data and returns a summary of differences.
         """
+        self.state_cache.clear()
         # Analyse each set for grid and object differences
         grid_differences: list[GridDifference] = []
         object_transformations: list[list[ObjectTransformation]] = []
@@ -222,11 +241,24 @@ class HeuristicEngine:
         background_colour = self.state_cache[set_id][
             "input"
         ].grid_state.background_colour
+        background_colour_change = (
+            background_colour
+            != self.state_cache[set_id]["output"].grid_state.background_colour
+        )
+
         input_colours = set(np.unique(input_array)) - {background_colour}
         output_colours = set(np.unique(output_array)) - {background_colour}
         new_colours = output_colours - input_colours
         removed_colours = input_colours - output_colours
         colour_changed = bool(new_colours or removed_colours)
+        # any empty rows or columns in the input but not in the output
+        empty_rows_cols_input = np.any(
+            np.all(input_array == background_colour, axis=1)
+        ) or np.any(np.all(input_array == background_colour, axis=0))
+        empty_rows_cols_output = np.any(
+            np.all(output_array == background_colour, axis=1)
+        ) or np.any(np.all(output_array == background_colour, axis=0))
+        empty_rows_cols_changed = empty_rows_cols_input != empty_rows_cols_output
 
         # Symmetry differences
         input_symmetry_h = np.array_equal(input_array, np.flipud(input_array))
@@ -247,10 +279,23 @@ class HeuristicEngine:
             or input_symmetry_diag != output_symmetry_diag
             or input_symmetry_anti_diag != output_symmetry_anti_diag
         )
+
+        # Check for empty halves in the input arrays
+        empty_top_half = np.all(
+            input_array[: input_array.shape[0] // 2, :] == background_colour
+        )
+        empty_bottom_half = np.all(
+            input_array[input_array.shape[0] // 2 :, :] == background_colour
+        )
+
         return GridDifference(
             set_id=set_id,
             input_shape=input_shape,
             output_shape=output_shape,
+            empty_input=(len(np.unique(input_array)) == 1),
+            empty_rows_cols_changed=empty_rows_cols_changed,
+            empty_top_half=empty_top_half,
+            empty_bottom_half=empty_bottom_half,
             # Object count
             input_object_count=input_object_count,
             output_object_count=output_object_count,
@@ -261,6 +306,8 @@ class HeuristicEngine:
             new_colours=new_colours,
             removed_colours=removed_colours,
             colour_changed=colour_changed,
+            background_colour_change=background_colour_change,
+            black_present=(0 in output_colours),
             # Symmetry differences
             input_symmetry_h=input_symmetry_h,
             output_symmetry_h=output_symmetry_h,
@@ -271,6 +318,11 @@ class HeuristicEngine:
             input_symmetry_anti_diag=input_symmetry_anti_diag,
             output_symmetry_anti_diag=output_symmetry_anti_diag,
             symmetry_changed=symmetry_changed,
+            # Properties
+            single_pixels=any(
+                obj.area == 1 for obj in self.state_cache[set_id]["input"].objects
+            ),
+            multi_objects=input_object_count > 2
         )
 
     def _check_split_grid(
@@ -405,10 +457,10 @@ class HeuristicEngine:
     ) -> bool:
         """
         Check if two bounding boxes overlap.
-        Bounding box format is (min_row, max_row, min_col, max_col).
+        Bounding box format is (min_row, min_col, max_row, max_col)
         """
-        min_row1, max_row1, min_col1, max_col1 = bbox1
-        min_row2, max_row2, min_col2, max_col2 = bbox2
+        min_row1, min_col1, max_row1, max_col1 = bbox1
+        min_row2, min_col2, max_row2, max_col2 = bbox2
 
         row_overlap = min_row1 <= max_row2 and min_row2 <= max_row1
         col_overlap = min_col1 <= max_col2 and min_col2 <= max_col1
@@ -615,6 +667,11 @@ class HeuristicEngine:
                 # Check each prop value maps to a single kwarg
                 if any(len(values) > 1 for values in association.mapping.values()):
                     continue
+                # Check if each training set has a different colour mapping for the same kwarg
+                if (len(association.mapping) == len(self.state_cache)) and (
+                    association.object_property == "colour"
+                ):
+                    continue
                 if (
                     association.support_score >= MIN_ASSOCIATION_SUPPORT
                     and association.mapping
@@ -625,6 +682,21 @@ class HeuristicEngine:
     # -----------------------------------------------------------------------------
     # Conserved properties analysis
     # -----------------------------------------------------------------------------
+
+    def row_col_scale(self):
+        """
+        Check in all output shapes if there is a consistent ratio of rows to columns across all sets.
+        """
+        output_shapes = [
+            self.state_cache[i]["output"].grid_state.dimensions
+            for i in range(len(self.state_cache))
+        ]
+        if not output_shapes:
+            return None
+        ratios = [rows / cols for rows, cols in output_shapes]
+        if all(r == ratios[0] for r in ratios):
+            return ratios[0]
+        return None
 
     def _analyse_conserved_properties(
         self,
@@ -657,4 +729,13 @@ class HeuristicEngine:
                 grid_diff.input_shape[0] == grid_diff.input_shape[1]
                 for grid_diff in grid_differences
             ),
+            row_size=all(
+                grid_diff.input_shape[0] == grid_diff.output_shape[0]
+                for grid_diff in grid_differences
+            ),
+            col_size=all(
+                grid_diff.input_shape[1] == grid_diff.output_shape[1]
+                for grid_diff in grid_differences
+            ),
+            row_col_scale=self.row_col_scale(),
         )

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Any
 from scipy import ndimage
 from skimage.measure import label, regionprops
+from collections import Counter
 
 # -----------------------------------------------------------------------------
 # Type Aliases
@@ -165,6 +166,10 @@ class GridState:
         return sum(1 for row in self.grid for cell in row if cell != 0)
 
     @property
+    def colour_counts(self) -> Counter:
+        return Counter(cell for row in self.grid for cell in row)
+
+    @property
     def as_array(self) -> np.ndarray:
         return np.array(self.grid, dtype=int)
 
@@ -257,7 +262,7 @@ class ObjectState:
     colour: Colour
     grid_size: tuple[int, int]  # (rows, cols) of the grid containing the object
 
-    bounding_box: tuple[int, int, int, int]  # (min_row, max_row, min_col, max_col)
+    bounding_box: tuple[int, int, int, int]  # (min_row, min_col, max_row, max_col)
     centroid: tuple[float, float]
     area: int
     cell_positions: PixelSet
@@ -287,13 +292,32 @@ class ObjectState:
             mutation_vectors=kwargs.get("mutation_vectors", self.mutation_vectors),
         )
 
+    def with_pixels(self, pixels: PixelSet) -> "ObjectState":
+        """
+        Return a new ObjectState with updated cell positions and recalculated bounding box, centroid, and area.
+        Bounding box is in the format (min_row, min_col, max_row, max_col).
+        """
+        pixels = frozenset(pixels)
+        if not pixels:
+            return self._replace(
+                cell_positions=pixels,
+                area=0,
+            )
+        rows, cols = zip(*pixels)
+        return self._replace(
+            cell_positions=pixels,
+            bounding_box=(min(rows), min(cols), max(rows), max(cols)),
+            centroid=(sum(rows) / len(rows), sum(cols) / len(cols)),
+            area=len(pixels),
+        )
+
     @property
     def height(self) -> int:
-        return self.bounding_box[1] - self.bounding_box[0] + 1
+        return self.bounding_box[2] - self.bounding_box[0] + 1
 
     @property
     def width(self) -> int:
-        return self.bounding_box[3] - self.bounding_box[2] + 1
+        return self.bounding_box[3] - self.bounding_box[1] + 1
 
     @property
     def size(self) -> tuple[int, int]:
@@ -315,26 +339,26 @@ class ObjectState:
         bounding_box = self.bounding_box
         output = np.zeros((self.height, self.width), dtype=int)
         for pos in self.cell_positions:
-            output[pos[0] - bounding_box[0], pos[1] - bounding_box[2]] = self.colour
+            output[pos[0] - bounding_box[0], pos[1] - bounding_box[1]] = self.colour
         return output
 
-    @property
-    def normalised_pixels(self) -> PixelSet:
-        """
-        Get the pixel positions normalised to (0,0)
-        """
-        min_row, max_row, min_col, max_col = self.bounding_box
-        return frozenset(
-            (row - min_row, col - min_col) for (row, col) in self.cell_positions
-        )
+    # @property
+    # def normalised_pixels(self) -> PixelSet:
+    #     """
+    #     Get the pixel positions normalised to (0,0)
+    #     """
+    #     min_row, min_col, max_row, max_col = self.bounding_box
+    #     return frozenset(
+    #         (row - min_row, col - min_col) for (row, col) in self.cell_positions
+    #     )
 
     @property
     def mask(self) -> np.ndarray:
         """
-        Get the binary mask of the object in its bounding box.
+        Get the binary mask of the object in the grid of it's grid size
         """
-        mask = np.zeros((self.height, self.width), dtype=bool)
-        for row, col in self.normalised_pixels:
+        mask = np.zeros((self.grid_size[0], self.grid_size[1]), dtype=bool)
+        for row, col in self.cell_positions:
             mask[row, col] = True
         return mask
 
@@ -348,6 +372,58 @@ class ObjectState:
             return False
         filled = ndimage.binary_fill_holes(mask)
         return not np.array_equal(mask, filled)
+
+    @property
+    def is_block(self) -> bool:
+        """
+        Check if the object is a solid block (no holes and filled inside)
+        """
+        mask = self.mask
+        filled = ndimage.binary_fill_holes(mask)
+        return np.array_equal(mask, filled) and np.all(mask)
+
+    @property
+    def pointed_direction(self) -> tuple[int, int]:
+        """
+        Direction a triangle / pyramid points: toward its narrow (apex) end.
+        Returns (0, 0) if the shape isn't a pyramid along either axis.
+        """
+        rows = [int(r) for r, _ in self.cell_positions]
+        cols = [int(c) for _, c in self.cell_positions]
+        row_count = Counter(rows)
+        col_count = Counter(cols)
+
+        top, bottom = row_count[min(rows)], row_count[max(rows)]
+        left, right = col_count[min(cols)], col_count[max(cols)]
+
+        if top < bottom:
+            return (-1, 0)
+        if bottom < top:
+            return (1, 0)
+        if left < right:
+            return (0, -1)
+        if right < left:
+            return (0, 1)
+        return (0, 0)
+
+    @property
+    def has_line(self) -> bool:
+        """
+        Check if the object has a line (horizontal, vertical) that is at least 50% of the object's height or width.
+        """
+        rows = [int(r) for r, _ in self.cell_positions]
+        cols = [int(c) for _, c in self.cell_positions]
+        row_count = Counter(rows)
+        col_count = Counter(cols)
+
+        max_row_line = max(row_count.values(), default=0)
+        max_col_line = max(col_count.values(), default=0)
+
+        return (
+            max_row_line >= 0.5 * self.height or max_col_line >= 0.5 * self.width
+        )
+
+
 
     @classmethod
     def from_regionprops(
@@ -370,7 +446,7 @@ class ObjectState:
         return cls(
             label_id=prop.label,
             colour=colour,
-            bounding_box=(bbox[0], bbox[2], bbox[1], bbox[3]),
+            bounding_box=bbox,
             centroid=(centroid[0], centroid[1]),
             area=int(prop.area),
             cell_positions=pixels,

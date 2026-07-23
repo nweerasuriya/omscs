@@ -11,13 +11,16 @@ from typing import Optional
 
 import numpy as np
 from scipy.spatial import distance
+from skimage.measure import label, regionprops
 
 # Enums
 ALL_DIRECTIONS = {(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)}
 COLOUR_SET = {0, 1, 2, 3, 4, 5, 6, 7, 8}
 
 
-def determine_new_obj_props(array: np.ndarray, centroid: tuple[float, float]):
+def determine_new_obj_pixels(
+    array: np.ndarray, centroid: tuple[float, float]
+) -> set[tuple[int, int]]:
     """
     Determine the new centroid and cell positions of an object after a transformation.
     """
@@ -33,6 +36,26 @@ def determine_new_obj_props(array: np.ndarray, centroid: tuple[float, float]):
         for coord in zip(*coords)
     }
     return new_pixels
+
+
+def determine_new_obj_props(pixels: frozenset):
+    """
+    Return bounding box and centroid of the new object based on its pixels.
+    Calculate using regionprops
+    """
+    if not pixels:
+        return None, None, None
+    # Create a mask for the new object
+    mask = pixels_to_mask(
+        pixels, (max(r for r, c in pixels) + 1, max(c for r, c in pixels) + 1)
+    )
+    labeled_mask = label(mask)
+    props = regionprops(labeled_mask)
+    if not props:
+        return None, None, None
+    bbox = props[0].bbox
+    centroid = props[0].centroid
+    return bbox, centroid, props[0].moments_hu
 
 
 def check_valid_grid(grid: np.ndarray) -> bool:
