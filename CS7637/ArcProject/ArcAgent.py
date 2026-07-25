@@ -37,7 +37,7 @@ def run_mcts_engine(
         state_to_array=lambda state: state.grid_state.as_array,
     )
     root_node = MCTSNode(problem=problem, state=problem._input_state, depth=0)
-    mcts_engine = MCTSEngine(root_node=root_node, iterations=4000)
+    mcts_engine = MCTSEngine(root_node=root_node, iterations=1500)
     mcts_engine.search()
     if not root_node.children:
         return MCTSResult(program=[], best_reward=0, problem=problem)

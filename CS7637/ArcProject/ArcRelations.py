@@ -39,17 +39,21 @@ SPATIAL_TARGETS = (
     "nearest_same_colour",
     "nearest_not_same_colour",
     "nearest_line_same_colour",
-    "nearest_line_not_same_colour",
-    "aligned_vertical_horizontal",
+    # "nearest_line_not_same_colour",
+    # "aligned_vertical_horizontal",
     # "largest_same_colour",
     # "smallest_same_colour",
+    "block",
     "container",
 )
 
 KWARG_SPACE: dict[str, tuple[tuple[str, str], ...]] = {
     "direction_vector": tuple(("direction_to", t) for t in SPATIAL_TARGETS),
     "scale": tuple(("steps_away_from", t) for t in SPATIAL_TARGETS),
-    "colour_count": tuple(("colour_count_match", t) for t in ["any", "container"]),
+    "target_pos": tuple(("target_position", t) for t in SPATIAL_TARGETS),
+    "colour_count": tuple(
+        ("colour_count_match", t) for t in ["any", "container", "block"]
+    ),
 }
 
 
@@ -225,6 +229,16 @@ class RelationalGraph:
                 return None
             return aligned_candidates
 
+        if reason == "block":
+            block_candidates = [
+                other_id
+                for other_id in candidates
+                if self._lookup_obj(other_id).is_block
+            ]
+            if not block_candidates:
+                return None
+            return block_candidates
+
         if reason == "container":
             container_candidates = [
                 other_id
@@ -239,17 +253,21 @@ class RelationalGraph:
 
     def move_to_target(
         self, obj_id: int, target_reason=str
-    ) -> Optional[tuple[dir_coord, int]]:
+    ) -> Optional[tuple[dir_coord, int, tuple[float, float]]]:
         """
         For a specific object, move it towards a target object based on the direction vector.
-        Return the direction vector and the distance to move.
+        Return the direction vector and the distance to move and the centroid position
         """
         target_id = self.select_target_object(obj_id, target_reason)
         if target_id is None:
             return None
         if len(target_id) == 1:
             pair = self.pairs[(obj_id, target_id[0])]
-            return pair.direction, pair.distance
+            return (
+                pair.direction,
+                pair.distance,
+                self._lookup_obj(target_id[0]).centroid,
+            )
         return None
 
     # def aligned_targets(self, obj_id: int, alignment: str) -> Optional[list[int]]:
@@ -334,18 +352,24 @@ class RelationalKwarg:
                 return interior_count if interior_count else self.default_value
             elif self.target == "any":
                 # Otherwise return object colour count ordered by ascending count
-                obj_colour_count = graph.colour_counts.copy()
-                if graph.background_colour in obj_colour_count:
-                    del obj_colour_count[graph.background_colour]
-                return obj_colour_count if obj_colour_count else self.default_value
+                pixel_colour_count = graph.colour_counts.copy()
+                return pixel_colour_count if pixel_colour_count else self.default_value
+            elif self.target == "block":
+                block_colour_count = Counter(
+                    obj.colour for obj in graph.filtered_objects if obj.is_block
+                )
+                return block_colour_count if block_colour_count else self.default_value
+
         moveset = graph.move_to_target(index, self.target)
         # aligned_objs = graph.aligned_targets(index, self.target)
         if moveset is not None:
-            direction, distance = moveset
+            direction, distance, centroid = moveset
             if self.query == "direction_to":
                 return direction
             elif self.query == "steps_away_from":
                 return distance
+            elif self.query == "target_position":
+                return centroid
 
         return self.default_value
 
@@ -386,7 +410,7 @@ def extract_translation_relations(
         moveset = input_graph.move_to_target(obj_in, target)
         if moveset is None:
             continue
-        direction, distance = moveset
+        direction, distance, centroid = moveset
         if (direction[0] * distance, direction[1] * distance) == translation_shift:
             kwarg_list.append(
                 {
@@ -399,6 +423,11 @@ def extract_translation_relations(
                         query="steps_away_from",
                         target=target,
                         default_value=distance,
+                    ),
+                    "target_pos": RelationalKwarg(
+                        query="target_position",
+                        target=target,
+                        default_value=input_graph._lookup_obj(obj_in).centroid,
                     ),
                 }
             )
@@ -436,13 +465,33 @@ def detect_counter_related_outputs(
                         query="colour_count_match",
                         target="container",
                         default_value=out_colour_count,
+                        support_score=1.0,
                     )
                 }
             )
 
     # 2. Object colour count
-    object_colour_count = Counter(obj.colour for obj in input_graph.filtered_objects)
+    object_colour_count = Counter(
+        obj.colour for obj in input_graph.filtered_objects if obj.is_block
+    )
     for colour, count in object_colour_count.items():
+        if colour == input_graph.background_colour:
+            continue
+        output_count = out_colour_count.get(colour)
+        if output_count == count:
+            colour_count_list.append(
+                {
+                    "colour_count": RelationalKwarg(
+                        query="colour_count_match",
+                        target="block",
+                        default_value=out_colour_count,
+                    )
+                }
+            )
+
+    # 3. Pixel colour count
+    pixel_colour_count = input_graph.colour_counts.copy()
+    for colour, count in pixel_colour_count.items():
         if colour == input_graph.background_colour:
             continue
         output_count = out_colour_count.get(colour)
@@ -490,7 +539,8 @@ def collect_relation_scores(
                 obj_t.input_object_id,
             )
             all_kwargs = translation_kwargs + colour_kwargs
-
+            if not all_kwargs:
+                continue
             # Add support scores for each relational kwarg
             for rel_kwarg in all_kwargs:
                 for k, rel_k in rel_kwarg.items():
@@ -510,6 +560,12 @@ SELECT_REASONS: dict[str, callable] = {
     == max(obj.area for obj in graph.filtered_objects),
     "is_closed": lambda graph, i: graph.filtered_objects[i].is_closed,
     "container": lambda graph, i: graph.is_container(i),
+    "most_common_colour": lambda graph, i: graph.filtered_objects[i].colour
+    == graph.colour_counts.most_common(1)[0][0],
+    "least_common_colour": lambda graph, i: graph.filtered_objects[i].colour
+    == graph.colour_counts.most_common()[-1][0],
+    "min_colour": lambda graph, i: graph.filtered_objects[i].colour
+    == min(obj.colour for obj in graph.filtered_objects),
 }
 
 

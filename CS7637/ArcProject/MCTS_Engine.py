@@ -309,7 +309,10 @@ class MCTSEngine:
             # print(
             #     f"Best program found with reward {self.solved_node.best_reward:.4f} and visits {self.solved_node.visits}"
             # )
-            return [self.solved_node.program()], self.solved_node
+            return [
+                self.solved_node.program(),
+                self.solved_node.parent.program(),
+            ], self.solved_node
 
         # Find the child node with the highest reward, breaking ties by depth
         best_node = self.root_node

@@ -41,6 +41,7 @@ class Require:
     EMPTY_BOTTOM_HALF = "requires:empty_bottom_half"
     SINGLE_PIXEL = "requires:single_pixel"
     MULTI_OBJECTS = "requires:multi_objects"
+    BLOCK_OBJECTS = "requires:block_objects"
 
 
 class Effect:
@@ -79,29 +80,28 @@ class PruningEngine:
         Get the exclusion tags based on the conserved properties.
         """
         exclusion_tags = set()
+        gd = heuristic_summary.grid_differences
+
         if conserved_properties.grid_size:
             exclusion_tags.add(Effect.GRID_SIZE)
         if conserved_properties.colours:
             exclusion_tags.add(Effect.COLOUR)
         if conserved_properties.object_count:
             exclusion_tags.add(Effect.OBJECT_COUNT)
-        # if conserved_properties.object_colours:
+        # if not (any(g.colour_changed for g in gd)):
         #     exclusion_tags.add(Effect.COLOUR)
         if conserved_properties.object_shapes:
             exclusion_tags.add(Effect.SHAPE)
+        if not any(grid_diff.object_count_changed for grid_diff in gd):
+            exclusion_tags.add(Effect.OBJECT_COUNT)
+
         # Requirements
         if not conserved_properties.all_square_grid:
             exclusion_tags.add(Require.SQUARE_GRID)
         if not heuristic_summary.split_grid:
             exclusion_tags.add(Require.SPLIT_GRID)
-        gd = heuristic_summary.grid_differences
         if not any(grid_diff.removed_colours for grid_diff in gd):
             exclusion_tags.add(Require.REMOVE_COLOURS)
-        if not any(grid_diff.object_count_changed for grid_diff in gd):
-            exclusion_tags.add(Effect.OBJECT_COUNT)
-        # # Remove some dsl if no mutations are present
-        # if len(heuristic_summary.object_transformations) == 0:
-        #     exclusion_tags.add(Require.DIRECTIONALITY)
         if (
             not hasattr(conserved_properties, "row_col_scale")
             or conserved_properties.row_col_scale is None
@@ -121,6 +121,8 @@ class PruningEngine:
             exclusion_tags.add(Require.SINGLE_PIXEL)
         if not any(grid_diff.multi_objects for grid_diff in gd):
             exclusion_tags.add(Require.MULTI_OBJECTS)
+        if not all(grid_diff.block_objects for grid_diff in gd):
+            exclusion_tags.add(Require.BLOCK_OBJECTS)
         return exclusion_tags
 
     def prune_primitives(
@@ -215,11 +217,14 @@ class PruningEngine:
             Require.EMPTY_BOTTOM_HALF: all(gd.empty_bottom_half for gd in grid_diff),
             Require.SINGLE_PIXEL: all(gd.single_pixels for gd in grid_diff),
             Require.MULTI_OBJECTS: all(gd.multi_objects for gd in grid_diff),
+            Require.BLOCK_OBJECTS: all(gd.block_objects for gd in grid_diff),
         }
 
         UNKNOWN = 0.5
         UNTAGGED = 0.5
         BASE_WEIGHT = 0.1
+
+        boosted_tags = ["split_grid", "empty", "conserved_colour"]
 
         weights = {}
         for primitive in primitives:
@@ -235,8 +240,11 @@ class PruningEngine:
             for tag in primitive_tags:
                 if tag in relevance_mapping:
                     score += 1.0 if relevance_mapping[tag] else BASE_WEIGHT
-                    if tag == "Require.SPLIT_GRID" and relevance_mapping[tag]:
-                        score += 5.0  # Boost for split grid if relevant
+                    if (
+                        any(boosted_tag in tag for boosted_tag in boosted_tags)
+                        and relevance_mapping[tag]
+                    ):
+                        score += 1.0  # Boost for relevant boosted tags
                 else:
                     score += UNKNOWN
             weights[primitive] = max(score, BASE_WEIGHT)

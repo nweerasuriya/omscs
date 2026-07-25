@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 from collections import Counter
+from itertools import groupby
 import scipy.ndimage as ndi
 from MemoryDecorators import decorate_primitive
 from ArcMemory import (
@@ -29,7 +30,9 @@ from helpers import (
 )
 
 
-def _update_object_state(obj: ObjectState, new_cell_positions: PixelSet) -> ObjectState:
+def _update_object_state(
+    obj: ObjectState, new_cell_positions: PixelSet, colour: int | None = None
+) -> ObjectState:
     """
     Update the object state with new cell positions
     """
@@ -46,7 +49,7 @@ def _update_object_state(obj: ObjectState, new_cell_positions: PixelSet) -> Obje
 
     return ObjectState(
         label_id=obj.label_id,
-        colour=obj.colour,
+        colour=colour if colour is not None else obj.colour,
         grid_size=obj.grid_size,
         bounding_box=bounding_box,
         centroid=centroid,
@@ -54,6 +57,19 @@ def _update_object_state(obj: ObjectState, new_cell_positions: PixelSet) -> Obje
         cell_positions=new_cell_positions,
         hu_moments=obj.hu_moments,
     )
+
+
+def _update_arcstate_grid(state: ArcState, new_objects: list[ObjectState]) -> ArcState:
+    """
+    Update the ArcState grid based on the new objects
+    """
+    new_grid = np.zeros(state.grid_state.dimensions, dtype=int)
+    # Order by priority
+    new_objects.sort(key=lambda o: o.priority, reverse=False)
+    for obj in new_objects:
+        for r, c in obj.cell_positions:
+            new_grid[r, c] = obj.colour
+    return ArcState.from_array(new_grid)
 
 
 # -----------------------------------------------------------------------------
@@ -179,11 +195,11 @@ def flip_horizontal(input_array: np.ndarray) -> np.ndarray:
     return np.fliplr(input_array)
 
 
-@decorate_primitive("object")
-def flip_object_horizontal(obj: ObjectState) -> ObjectState:
-    flipped_grid = np.fliplr(obj.mask)
-    new_pixels = determine_new_obj_pixels(flipped_grid, obj.centroid)
-    return _update_object_state(obj, PixelSet(new_pixels))
+# @decorate_primitive("object")
+# def flip_object_horizontal(obj: ObjectState) -> ObjectState:
+#     flipped_grid = np.fliplr(obj.mask)
+#     new_pixels = determine_new_obj_pixels(flipped_grid, obj.centroid)
+#     return _update_object_state(obj, PixelSet(new_pixels))
 
 
 @decorate_primitive("grid")
@@ -191,11 +207,11 @@ def flip_vertical(input_array: np.ndarray) -> np.ndarray:
     return np.flipud(input_array)
 
 
-@decorate_primitive("object")
-def flip_object_vertical(obj: ObjectState) -> ObjectState:
-    flipped_grid = np.flipud(obj.mask)
-    new_pixels = determine_new_obj_pixels(flipped_grid, obj.centroid)
-    return _update_object_state(obj, PixelSet(new_pixels))
+# @decorate_primitive("object")
+# def flip_object_vertical(obj: ObjectState) -> ObjectState:
+#     flipped_grid = np.flipud(obj.mask)
+#     new_pixels = determine_new_obj_pixels(flipped_grid, obj.centroid)
+#     return _update_object_state(obj, PixelSet(new_pixels))
 
 
 @decorate_primitive("grid", tags={Require.SQUARE_GRID})
@@ -203,11 +219,11 @@ def flip_diagonal(input_array: np.ndarray) -> np.ndarray:
     return np.transpose(input_array)
 
 
-@decorate_primitive("object", tags={Require.SQUARE_GRID})
-def flip_object_diagonal(obj: ObjectState) -> ObjectState:
-    flipped_grid = np.transpose(obj.mask)
-    new_pixels = determine_new_obj_pixels(flipped_grid, obj.centroid)
-    return _update_object_state(obj, PixelSet(new_pixels))
+# @decorate_primitive("object", tags={Require.SQUARE_GRID})
+# def flip_object_diagonal(obj: ObjectState) -> ObjectState:
+#     flipped_grid = np.transpose(obj.mask)
+#     new_pixels = determine_new_obj_pixels(flipped_grid, obj.centroid)
+#     return _update_object_state(obj, PixelSet(new_pixels))
 
 
 @decorate_primitive("grid", tags={Require.SQUARE_GRID})
@@ -215,11 +231,11 @@ def flip_anti_diagonal(input_array: np.ndarray) -> np.ndarray:
     return np.fliplr(np.transpose(input_array))
 
 
-@decorate_primitive("object", tags={Require.SQUARE_GRID})
-def flip_object_anti_diagonal(obj: ObjectState) -> ObjectState:
-    flipped_grid = np.fliplr(np.transpose(obj.mask))
-    new_pixels = determine_new_obj_pixels(flipped_grid, obj.centroid)
-    return _update_object_state(obj, PixelSet(new_pixels))
+# @decorate_primitive("object", tags={Require.SQUARE_GRID})
+# def flip_object_anti_diagonal(obj: ObjectState) -> ObjectState:
+#     flipped_grid = np.fliplr(np.transpose(obj.mask))
+#     new_pixels = determine_new_obj_pixels(flipped_grid, obj.centroid)
+#     return _update_object_state(obj, PixelSet(new_pixels))
 
 
 # -----------------------------------------------------------------------------
@@ -260,17 +276,19 @@ def update_colour(
     return grid
 
 
-@decorate_primitive("grid", tags={Effect.COLOUR, Require.REMOVE_COLOURS})
-def remove_colours(
-    input_array: np.ndarray, removed_colour_set: set[int], background_colour: int = 0
-) -> np.ndarray:
-    """
-    Remove the specified colours from the input array by setting them to background colour 0.
-    """
-    grid = input_array.copy()
-    for colour in removed_colour_set:
-        grid = np.where(grid == colour, background_colour, grid)
-    return grid
+# @decorate_primitive(
+#     "grid", tags={Effect.COLOUR, Require.REMOVE_COLOURS, Require.MULTI_OBJECTS}
+# )
+# def remove_colours(
+#     input_array: np.ndarray, removed_colour_set: set[int], background_colour: int = 0
+# ) -> np.ndarray:
+#     """
+#     Remove the specified colours from the input array by setting them to background colour 0.
+#     """
+#     grid = input_array.copy()
+#     for colour in removed_colour_set:
+#         grid = np.where(grid == colour, background_colour, grid)
+#     return grid
 
 
 @decorate_primitive("grid", tags={Effect.COLOUR, Effect.BACKGROUND_COLOUR})
@@ -344,6 +362,22 @@ def colour_grey_to_black(input_array: np.ndarray, grey: int = 5) -> np.ndarray:
 @decorate_primitive("object", tags={Effect.COLOUR})
 def recolour_object(obj: ObjectState, new_colour_obj: int) -> ObjectState:
     return obj._replace(colour=new_colour_obj)
+
+
+@decorate_primitive("state", tags={Effect.COLOUR})
+def recolour_most_common(
+    state: ArcState, colour_count: Counter, background_colour: int
+) -> np.ndarray:
+    """
+    Recolour grid to most common colour in the input array. If two colours are present, recolour to the most common colour.
+    """
+    grid = state.grid_state.as_array.copy()
+    if not colour_count:
+        return grid
+    most_common_colour, _ = colour_count.most_common(1)[0]
+    if most_common_colour == background_colour:
+        return grid
+    return np.where(grid != background_colour, most_common_colour, grid)
 
 
 @decorate_primitive("grid", tags={Effect.GROWTH})
@@ -553,11 +587,25 @@ def mirror_for_empty_top_half(input_array: np.ndarray) -> np.ndarray:
     return np.vstack((mirrored_bottom_half, bottom_half))
 
 
-@decorate_primitive("grid", tags={Effect.GRID_SIZE, Effect.SHRINK})
-def shrink_grid(input_array: np.ndarray) -> np.ndarray:
+@decorate_primitive(
+    "grid", tags={Effect.GRID_SIZE, Effect.SHRINK, Effect.CONSERVED_COLOUR}
+)
+def swap_colour_shrink_grid(
+    input_array: np.ndarray, background_colour: int
+) -> np.ndarray:
     """
+    Swap colours if two colours are present in the input array
     Shrink grid by removing the outer cells for rows and cols
     """
+    colours = np.unique(input_array)
+    colours = colours[colours != background_colour]
+    if len(colours) == 2:
+        mask_a = input_array == colours[0]
+        mask_b = input_array == colours[1]
+        new_array = np.select(
+            [mask_a, mask_b], [colours[1], colours[0]], default=input_array
+        )
+        return new_array[1:-1, 1:-1]
     return input_array[1:-1, 1:-1]
 
 
@@ -616,46 +664,52 @@ def expand_grid_as_stair(
 #     return input_array[: out_shape[0], : out_shape[1]]
 
 
-# @decorate_primitive("grid")
-# def reshape_grid(
-#     input_array: np.ndarray, out_shape: tuple[int, int], background_colour: int
-# ) -> np.ndarray:
-#     """
-#     Resize the input array to the specified output shape.
-#     If pixels spill over move them to the next row or column when output is smaller.
-#     """
-#     out_rows, out_cols = out_shape
-#     if input_array.shape[0] == out_rows and input_array.shape[1] == out_cols:
-#         return input_array.copy()
-#     # Create a new output array filled with background colour
-#     output_array = np.full(out_shape, background_colour, dtype=input_array.dtype)
+@decorate_primitive(
+    "grid",
+    tags={Effect.GRID_SIZE, Effect.SHAPE, Effect.SHRINK, Effect.CONSERVED_COLOUR},
+)
+def reshape_grid(
+    input_array: np.ndarray, out_shape: tuple[int, int], background_colour: int
+) -> np.ndarray:
+    """
+    Resize the input array to the specified output shape.
+    If pixels spill over move them to the next row or column when output is smaller.
+    """
+    if np.unique(input_array).size > 2:
+        return input_array
+    out_rows, out_cols = out_shape
+    if input_array.shape[0] == out_rows and input_array.shape[1] == out_cols:
+        return input_array.copy()
+    # Create a new output array filled with background colour
+    output_array = np.full(out_shape, background_colour, dtype=input_array.dtype)
 
-#     # if input_array is larger than out_shape, we need to flatten it and then reshape it
-#     if input_array.shape[0] > out_rows or input_array.shape[1] > out_cols:
-#         flat_input = input_array.flatten()
-#         non_zero_pixels = flat_input[flat_input != background_colour]
+    # if input_array is larger than out_shape, we need to flatten it and then reshape it
+    if input_array.shape[0] > out_rows or input_array.shape[1] > out_cols:
+        flat_input = input_array.flatten()
+        non_zero_pixels = flat_input[flat_input != background_colour]
 
-#         # Fill with coloured pixels overflowing to the next row or column start from top left
-#         for pixel in non_zero_pixels:
-#             for row in range(out_rows):
-#                 for col in range(out_cols):
-#                     if output_array[row, col] == background_colour:
-#                         output_array[row, col] = pixel
-#                         break
-#                 else:
-#                     continue
-#                 break
+        # Fill with coloured pixels overflowing to the next row or column start from top left
+        for pixel in non_zero_pixels:
+            for row in range(out_rows):
+                for col in range(out_cols):
+                    if output_array[row, col] == background_colour:
+                        output_array[row, col] = pixel
+                        break
+                else:
+                    continue
+                break
+    else:
+        # If input_array is smaller or the same size than out_shape then add pixels in original position in new grid
+        for row in range(input_array.shape[0]):
+            for col in range(input_array.shape[1]):
+                if input_array[row, col] != background_colour:
+                    output_array[row, col] = input_array[row, col]
+    return output_array
 
-#     else:
-#         # If input_array is smaller or the same size than out_shape then add pixels in original position in new grid
-#         for row in range(input_array.shape[0]):
-#             for col in range(input_array.shape[1]):
-#                 if input_array[row, col] != background_colour:
-#                     output_array[row, col] = input_array[row, col]
-#     return output_array
 
-
-@decorate_primitive("grid", tags={Require.EMPTY_ROWS_COLS, Effect.GRID_SIZE})
+@decorate_primitive(
+    "grid", tags={Effect.GRID_SIZE, Effect.SHRINK, Require.EMPTY_ROWS_COLS}
+)
 def remove_empty_outer_rows_and_columns(
     input_array: np.ndarray, background_colour: int
 ) -> np.ndarray:
@@ -689,23 +743,23 @@ def remove_empty_outer_rows_and_columns(
 # -----------------------------------------------------------------------------
 
 
-# TODO: Account for cells not bordering bounding box
-@decorate_primitive("object", tags={Effect.SHAPE})
-def fill_bounding_box(
-    obj: ObjectState,
-) -> ObjectState:
-    """
-    Fill the object with the specified colour within bounding box
-    """
-    bounding_box = obj.bounding_box
-    x_min, y_min, x_max, y_max = bounding_box
-    # Get new cell positions within the bounding box
-    new_cell_positions = set()
-    for x in range(x_min, x_max):
-        for y in range(y_min, y_max):
-            new_cell_positions.add((x, y))
+# # TODO: Account for cells not bordering bounding box
+# @decorate_primitive("object", tags={Effect.SHAPE})
+# def fill_bounding_box(
+#     obj: ObjectState,
+# ) -> ObjectState:
+#     """
+#     Fill the object with the specified colour within bounding box
+#     """
+#     bounding_box = obj.bounding_box
+#     x_min, y_min, x_max, y_max = bounding_box
+#     # Get new cell positions within the bounding box
+#     new_cell_positions = set()
+#     for x in range(x_min, x_max):
+#         for y in range(y_min, y_max):
+#             new_cell_positions.add((x, y))
 
-    return _update_object_state(obj, PixelSet(new_cell_positions))
+#     return _update_object_state(obj, PixelSet(new_cell_positions))
 
 
 @decorate_primitive("object")
@@ -743,44 +797,60 @@ def fill_enclosed_area(
         ]
 
 
-@decorate_primitive("object", tags={Effect.SHAPE})
-def crop_object(obj: ObjectState) -> ObjectState:
-    """
-    Crop the object to its bounding box
-    """
-    x_min, y_min, x_max, y_max = obj.bounding_box
-    new_cell_positions = set()
-    for cell in obj.cell_positions:
-        x, y = cell
-        if x_min <= x < x_max and y_min <= y < y_max:
-            new_cell_positions.add(cell)
+# @decorate_primitive("object", tags={Effect.SHAPE})
+# def crop_object(obj: ObjectState) -> ObjectState:
+#     """
+#     Crop the object to its bounding box
+#     """
+#     x_min, y_min, x_max, y_max = obj.bounding_box
+#     new_cell_positions = set()
+#     for cell in obj.cell_positions:
+#         x, y = cell
+#         if x_min <= x < x_max and y_min <= y < y_max:
+#             new_cell_positions.add(cell)
 
-    return _update_object_state(obj, PixelSet(new_cell_positions))
-
-
-@decorate_primitive("object", tags={Effect.GROWTH})
-def grow_object(obj: ObjectState, scale: int) -> ObjectState:
-    """
-    Grow the object by scale factor.
-    """
-    cell_positions = obj.cell_positions
-    new_cell_positions = set(cell_positions)
-    for cell in cell_positions:
-        x, y = cell
-        for dx in range(-scale, scale + 1):
-            for dy in range(-scale, scale + 1):
-                new_cell_positions.add((x + dx, y + dy))
-    return _update_object_state(obj, PixelSet(new_cell_positions))
+#     return _update_object_state(obj, PixelSet(new_cell_positions))
 
 
-@decorate_primitive("object", tags={Effect.GROWTH})
-def surround_object(obj: ObjectState, out_colour: int) -> ObjectState:
+# @decorate_primitive("object", tags={Effect.GROWTH})
+# def grow_object(obj: ObjectState, scale: int) -> ObjectState:
+#     """
+#     Grow the object by scale factor.
+#     """
+#     cell_positions = obj.cell_positions
+#     new_cell_positions = set(cell_positions)
+#     for cell in cell_positions:
+#         x, y = cell
+#         for dx in range(-scale, scale + 1):
+#             for dy in range(-scale, scale + 1):
+#                 new_cell_positions.add((x + dx, y + dy))
+#     return _update_object_state(obj, PixelSet(new_cell_positions))
+
+
+def _surround_object(obj: ObjectState, out_colour: int, fill_type: str) -> ObjectState:
     """
     Surround the object with a border of the specified colour.
     8-connectivity
     """
     cell_positions = obj.cell_positions
     new_cell_positions = set(cell_positions)
+
+    # Find the interior of the object
+    rows, cols = obj.grid_size
+    mask = np.zeros((rows, cols), dtype=bool)
+    for r, c in cell_positions:
+        mask[r, c] = True
+    inside = ndi.binary_fill_holes(mask)
+    inside = set(zip(*np.where(inside)))
+
+    # Set condition of fill type
+    if fill_type == "interior":
+        fill_condition = lambda neighbor: neighbor in inside
+    elif fill_type == "exterior":
+        fill_condition = lambda neighbor: neighbor not in inside
+    else:
+        return obj  # Invalid fill_type, return original object
+
     for cell in cell_positions:
         x, y = cell
         neighbors = [
@@ -794,20 +864,33 @@ def surround_object(obj: ObjectState, out_colour: int) -> ObjectState:
             (x + 1, y + 1),
         ]
         for neighbor in neighbors:
-            if neighbor not in cell_positions:
+            if fill_condition(neighbor) and neighbor not in cell_positions:
                 new_cell_positions.add(neighbor)
     if out_colour == obj.colour:
         return _update_object_state(obj, PixelSet(new_cell_positions))
     else:
-        return ObjectState(
-            label_id=obj.label_id + np.random.randint(1, 1000),
-            colour=out_colour,
-            grid_size=obj.grid_size,
-            bounding_box=obj.bounding_box,
-            centroid=obj.centroid,
-            area=len(new_cell_positions),
-            cell_positions=PixelSet(new_cell_positions),
-        )
+        return [
+            ObjectState(
+                label_id=obj.label_id + np.random.randint(1, 1000),
+                colour=out_colour,
+                grid_size=obj.grid_size,
+                bounding_box=obj.bounding_box,
+                centroid=obj.centroid,
+                area=len(new_cell_positions),
+                cell_positions=PixelSet(new_cell_positions),
+            ),
+            obj,
+        ]
+
+
+@decorate_primitive("object", tags={Effect.GROWTH})
+def surround_object_with_exterior(obj: ObjectState, out_colour: int) -> ObjectState:
+    return _surround_object(obj, out_colour, fill_type="exterior")
+
+
+@decorate_primitive("object", tags={Require.CLOSED_OBJECT, Effect.OBJECT_COUNT})
+def surround_interior_obj(obj: ObjectState, out_colour: int) -> ObjectState:
+    return _surround_object(obj, out_colour, fill_type="interior")
 
 
 # @object_primitive(tags={Effect.SHRINK})
@@ -1032,7 +1115,86 @@ def grow_all_diag(obj: ObjectState) -> ObjectState:
     return _update_object_state(obj, PixelSet(new_cell_positions))
 
 
-@decorate_primitive("state", tags={Effect.OBJECT_COUNT, Effect.SHAPE})
+@decorate_primitive(
+    "object", tags={Require.DIRECTIONALITY, Effect.OBJECT_COUNT, Require.SINGLE_PIXEL}
+)
+def connect_objects_diag_specific(
+    obj: ObjectState, direction_vector: tuple, out_colour: int, target_pos: tuple
+):
+    """
+    Specific transformation where we create a joining line between this object to another pixel on the grid
+    The line first moves diagonally in the direction of the other pixel, then moves horizontally or vertically to reach the other pixel when 1 row/col away from the other pixel
+    Assume object is a single pixel
+    """
+    if direction_vector == (0, 0) or obj.area != 1:
+        return obj
+    grid_shape = obj.grid_size
+    new_cell_positions = set(obj.cell_positions)
+    dx, dy = direction_vector
+    start_point = list(obj.cell_positions)[0]
+    x, y = start_point
+    target_x, target_y = int(target_pos[0]), int(target_pos[1])
+
+    break_condition = None
+    # Move diagonally until we are 1 row/col away from the target pixel
+    while True:
+        x += dx
+        y += dy
+        if 0 <= x < grid_shape[0] and 0 <= y < grid_shape[1]:
+            new_cell_positions.add((x, y))
+        else:
+            break
+        if abs(x - target_x) < 2:
+            break_condition = "row"
+            break
+        elif abs(y - target_y) < 2:
+            break_condition = "col"
+            break
+
+    # Move horizontally or vertically to reach the target pixel
+    if break_condition == "row":
+        step = 1 if target_y > y else -1
+        for c in range(y, target_y + step, step):
+            if 0 <= x < grid_shape[0] and 0 <= c < grid_shape[1]:
+                new_cell_positions.add((x, c))
+    elif break_condition == "col":
+        step = 1 if target_x > x else -1
+        for r in range(x, target_x + step, step):
+            if 0 <= r < grid_shape[0] and 0 <= y < grid_shape[1]:
+                new_cell_positions.add((r, y))
+    else:
+        return obj
+
+    # Remove last entry in new_cell_positions regardless
+    if break_condition == "row":
+        new_cell_positions.remove((x, target_y))
+    elif break_condition == "col":
+        new_cell_positions.remove((target_x, y))
+
+    if out_colour == obj.colour:
+        return _update_object_state(
+            obj, PixelSet(new_cell_positions), colour=out_colour
+        )
+    else:
+        bbox, centroid, hu = determine_new_obj_props(new_cell_positions)
+        return [
+            ObjectState(
+                label_id=obj.label_id + np.random.randint(1, 1000),
+                colour=out_colour,
+                grid_size=obj.grid_size,
+                bounding_box=bbox,
+                centroid=centroid,
+                hu_moments=hu,
+                area=len(new_cell_positions),
+                cell_positions=PixelSet(new_cell_positions),
+            ),
+            obj,
+        ]
+
+
+@decorate_primitive(
+    "state", tags={Effect.OBJECT_COUNT, Effect.SHAPE, Require.SINGLE_PIXEL}
+)
 def remove_single_pixels_grid(
     state: ArcState,
     background_colour: int,
@@ -1055,18 +1217,18 @@ def remove_single_pixels_grid(
     return new_grid
 
 
-@decorate_primitive("object", tags={Effect.SHAPE})
-def remove_block_object(
-    obj: ObjectState,
-) -> ObjectState:
-    """
-    If an object is a block (all pixels are connected), remove it as an object state.
-    Return objects state with no cell positions
-    """
-    if obj.is_block:
-        return _update_object_state(obj, PixelSet(set()))
-    else:
-        return obj
+# @decorate_primitive("object", tags={Effect.SHAPE})
+# def remove_block_object(
+#     obj: ObjectState,
+# ) -> ObjectState:
+#     """
+#     If an object is a block (all pixels are connected), remove it as an object state.
+#     Return objects state with no cell positions
+#     """
+#     if obj.is_block:
+#         return _update_object_state(obj, PixelSet(set()))
+#     else:
+#         return obj
 
 
 @decorate_primitive("object", tags={Effect.OBJECT_COUNT})
@@ -1079,37 +1241,12 @@ def remove_object(
     return _update_object_state(obj, PixelSet(set()))
 
 
-@decorate_primitive("object", tags={Require.DIRECTIONALITY})
-def reflect_relative_obj(
-    obj: ObjectState,
-    direction_vector: tuple[int, int],
-    scale: int,  # Steps away from
-) -> ObjectState:
-    """
-    Reflect the object relative to the nearest object in the specified direction
-    """
-    # Find mirror line based on directions and steps away
-    dx, dy = direction_vector
-    if dx == 0 and dy == 0 or scale == 0 or not obj.cell_positions:
-        return obj
-    obj_max_pos_dir = max(obj.cell_positions, key=lambda p: (p[0] * dx + p[1] * dy))
-    mirror_line = (obj_max_pos_dir[0] + scale * dx, obj_max_pos_dir[1] + scale * dy)
-    new_cell_positions = set()
-    axis = 0 if dx else 1
-    # Reflect each cell in the object across the mirror line in direction
-    for cell in obj.cell_positions:
-        reflected = list(cell)
-        reflected[axis] = mirror_line[axis] - cell[axis]
-        new_cell_positions.add(tuple(reflected))
-    return _update_object_state(obj, PixelSet(new_cell_positions))
-
-
 # -----------------------------------------------------------------------------
 # New Patterns
 # -----------------------------------------------------------------------------
 @decorate_primitive("grid", tags={Require.SQUARE_GRID, Require.EMPTY_GRID})
 def create_spiral_pattern(
-    input_array: np.ndarray, out_colour: int, clockwise: bool
+    input_array: np.ndarray, out_colour: int, clockwise: bool, corner_position: str
 ) -> np.ndarray:
     """
     Create a spiral pattern starting from the top left corner of the input array
@@ -1126,38 +1263,49 @@ def create_spiral_pattern(
     lengths = [m - 1, n - 1, m - 1] + [
         k for k in range(min(n, m) - 3, 0, -2) for _ in (0, 1)
     ]
-    r, c = 0, 0
+    # Determine the starting position based on the corner_position argument
+    map = {
+        "top-left": (0, 0),
+        "top-right": (0, m - 1),
+        "bottom-left": (n - 1, 0),
+        "bottom-right": (n - 1, m - 1),
+    }
+    r, c = map[corner_position]
     grid[r, c] = out_colour
     for i, L in enumerate(lengths):
         dr, dc = dirs[i % 4]
         for _ in range(L):
             r, c = r + dr, c + dc
-            grid[r, c] = out_colour
+            if 0 <= r < n and 0 <= c < m:
+                grid[r, c] = out_colour
     return grid
 
 
 # -----------------------------------------------------------------------------
 # Count based primitives
 # -----------------------------------------------------------------------------
-@decorate_primitive("object", tags={Effect.COLOUR, Effect.OBJECT_COUNT})
-def remove_most_common_colour_obj(
-    obj: ObjectState, colour_count: Counter
-) -> ObjectState:
+@decorate_primitive(
+    "state", tags={Effect.COLOUR, Effect.OBJECT_COUNT, Require.MULTI_OBJECTS}
+)
+def remove_most_common_colour_obj(state: ArcState, colour_count: Counter) -> ArcState:
     """
-    Remove the most common colour from the object state and return a new object state with the remaining pixels
+    Remove the most common colour from the arc state, returning remaining objects.
     """
     if not colour_count:
-        return obj
+        return state
     most_common_colour = colour_count.most_common(1)[0][0]
-    new_cell_positions = set(
-        cell for cell in obj.cell_positions if obj.colour != most_common_colour
-    )
-    return _update_object_state(obj, PixelSet(new_cell_positions))
+    new_objects = [obj for obj in state.objects if obj.colour != most_common_colour]
+    return _update_arcstate_grid(state, new_objects)
 
 
-@decorate_primitive("state", tags={Effect.GRID_SIZE, Effect.SHAPE})
+@decorate_primitive(
+    "state", tags={Effect.GRID_SIZE, Effect.SHAPE, Require.MULTI_OBJECTS}
+)
 def count_colours(
-    state: ArcState, colour_count: Counter, out_shape: tuple[int, int]
+    state: ArcState,
+    colour_count: Counter,
+    out_shape: tuple[int, int],
+    background_colour: int,
 ) -> np.ndarray:
     """
     Use the colour counter to return a grid with the counts
@@ -1165,19 +1313,24 @@ def count_colours(
     """
     if not colour_count:
         return None
-    if len(colour_count) == 1:
+    if (
+        len(colour_count) == 1
+        and colour_count.most_common(1)[0][0] == background_colour
+    ):
         return None
     # check if rows are greater than columns
     rows, cols = out_shape
     n_colours = len(colour_count)
     max_count = max(colour_count.values())
-    if rows < cols:
+    # Horizontal lines
+    if rows <= cols:
         colour_count = Counter(
             dict(sorted(colour_count.items(), key=lambda x: x[1], reverse=False))
         )
         output_array = np.zeros((n_colours, max_count), dtype=int)
         for i, (colour, count) in enumerate(colour_count.items()):
             output_array[i, :count] = colour
+    # Otherwise, vertical lines
     else:
         colour_count = Counter(
             dict(sorted(colour_count.items(), key=lambda x: x[1], reverse=True))
@@ -1186,6 +1339,36 @@ def count_colours(
         for i, (colour, count) in enumerate(colour_count.items()):
             output_array[:count, i] = colour
     return output_array
+
+
+# @decorate_primitive(
+#     "state",
+#     tags={Effect.GRID_SIZE, Effect.SHAPE, Require.MULTI_OBJECTS, Require.BLOCK_OBJECTS},
+# )
+# def count_colours_block_objects(
+#     state: ArcState, out_shape: tuple[int, int], background_colour: int
+# ):
+#     """
+#     Count the colours of block objects in the state and return a grid with the counts
+#     """
+#     colour_count = Counter()
+#     for obj in state.objects:
+#         if obj.is_block:
+#             colour_count[obj.colour] += 1
+#     if len(colour_count) == 0:
+#         return None
+#     # Remove most common colour
+#     most_common_colour = colour_count.most_common(1)[0][0]
+#     colour_count.pop(most_common_colour)
+#     new_grid = count_colours(
+#         state,
+#         colour_count,
+#         out_shape,
+#         max_rows=out_shape[0],
+#         max_cols=out_shape[1],
+#         background_colour=background_colour,
+#     )
+#     return new_grid
 
 
 @decorate_primitive("object", tags={Require.CLOSED_OBJECT})
@@ -1258,10 +1441,29 @@ def unfill_all_objects(state: ArcState) -> ArcState:
             grid[r, c] = obj.colour
     return ArcState.from_array(grid)
 
-@decorate_primitive("state", tags={Effect.TRANSLATE, Require.SINGLE_PIXEL, Require.MULTI_OBJECTS})
-def join_single_pixels_to_large_colour_object(
-    state: ArcState
-):
+
+# %% --------------------------------------------------------------------------
+# State based primitives
+# -----------------------------------------------------------------------------
+@decorate_primitive("state", tags={Effect.COLOUR})
+def recolour_all_objects(state: ArcState, out_colour: int) -> ArcState:
+    """
+    Recolour all objects in the state to the specified colour
+    """
+    new_objects = []
+    for obj in state.objects:
+        new_obj = _update_object_state(
+            obj, PixelSet(obj.cell_positions), colour=out_colour
+        )
+        new_objects.append(new_obj)
+
+    return _update_arcstate_grid(state, new_objects)
+
+
+@decorate_primitive(
+    "state", tags={Effect.TRANSLATE, Require.SINGLE_PIXEL, Require.MULTI_OBJECTS}
+)
+def join_single_pixels_to_large_colour_object(state: ArcState):
     """
     Move and join single pixels onto a large object of the same colour if available
     """
@@ -1269,7 +1471,7 @@ def join_single_pixels_to_large_colour_object(
     objects = state.objects
     new_grid = grid.copy()
     single_pixel_objects = [obj for obj in objects if obj.area == 1]
-    large_colour_objects = [obj for obj in objects if obj.area > 1]
+    large_colour_objects = [obj for obj in objects if obj.area > 2]
 
     if not single_pixel_objects or not large_colour_objects:
         return state
@@ -1289,17 +1491,273 @@ def join_single_pixels_to_large_colour_object(
         if single_pixel_pos[0] in large_object_rows:
             new_grid[single_pixel_pos[0], single_pixel_pos[1]] = 0
             try:
-                target_col = (min(large_object_cols) - 1) if single_pixel_pos[1] < min(large_object_cols) else max(large_object_cols) + 1
+                target_col = (
+                    (min(large_object_cols) - 1)
+                    if single_pixel_pos[1] < min(large_object_cols)
+                    else max(large_object_cols) + 1
+                )
+                new_grid[single_pixel_pos[0], target_col] = colour
             except:
-                target_col = (min(large_object_cols)) if single_pixel_pos[1] < min(large_object_cols) else max(large_object_cols)
-            new_grid[single_pixel_pos[0], target_col] = colour
+                target_col = (
+                    (min(large_object_cols))
+                    if single_pixel_pos[1] < min(large_object_cols)
+                    else max(large_object_cols)
+                )
+                new_grid[single_pixel_pos[0], target_col] = colour
         elif single_pixel_pos[1] in large_object_cols:
             new_grid[single_pixel_pos[0], single_pixel_pos[1]] = 0
             try:
-                target_row = (min(large_object_rows) - 1) if single_pixel_pos[0] < min(large_object_rows) else max(large_object_rows) + 1
+                target_row = (
+                    (min(large_object_rows) - 1)
+                    if single_pixel_pos[0] < min(large_object_rows)
+                    else max(large_object_rows) + 1
+                )
+                new_grid[target_row, single_pixel_pos[1]] = colour
             except:
-                target_row = (min(large_object_rows)) if single_pixel_pos[0] < min(large_object_rows) else max(large_object_rows)
-            new_grid[target_row, single_pixel_pos[1]] = colour
-    return ArcState.from_array(new_grid)
-        
+                target_row = (
+                    (min(large_object_rows))
+                    if single_pixel_pos[0] < min(large_object_rows)
+                    else max(large_object_rows)
+                )
+                new_grid[target_row, single_pixel_pos[1]] = colour
 
+    return ArcState.from_array(new_grid)
+
+
+@decorate_primitive("state", tags={Require.MULTI_OBJECTS, Effect.TRANSLATE})
+def reflect_obj_relative_to_line_obj(
+    state: ArcState,
+) -> ArcState:
+    """
+    Reflect the object relative to the nearest line object in the specified direction
+    """
+    objects = state.objects
+    line_objects = [obj for obj in objects if obj.has_line]
+    # Get all other objects that are not line objects use opposite of intersection
+    other_objects = [obj for obj in objects if obj not in line_objects]
+
+    if not line_objects or not other_objects:
+        return state
+
+    new_objects = line_objects.copy()
+    for obj in other_objects:
+        # Find closest line
+        closest_line = min(
+            line_objects,
+            key=lambda line: np.min(
+                [
+                    np.linalg.norm(np.array(cell) - np.array(line_cell))
+                    for cell in obj.cell_positions
+                    for line_cell in line.cell_positions
+                ]
+            ),
+        )
+        # Reflect the object relative to the closest line
+        line_cells = list(closest_line.cell_positions)
+        # Find most common row or column in the line cells to determine the mirror line
+        rows, cols = zip(*line_cells)
+        most_row, most_row_count = Counter(rows).most_common(1)[0]
+        most_col, most_col_count = Counter(cols).most_common(1)[0]
+        if most_row_count > most_col_count:
+            # More rows than columns, mirror line is horizontal
+            mirror_line = [(most_row, min(cols)), (most_row, max(cols))]
+        else:
+            # More columns than rows, mirror line is vertical
+            mirror_line = [(min(rows), most_col), (max(rows), most_col)]
+        new_cell_positions = set()
+        for cell in obj.cell_positions:
+            reflected = list(cell)
+            # Axis 0 is vertical line (x coordinate is the same) and vice versa
+            axis = 0 if mirror_line[0][0] == mirror_line[1][0] else 1
+            reflected[axis] = mirror_line[0][axis] + (mirror_line[0][axis] - cell[axis])
+            new_cell_positions.add(tuple(reflected))
+
+        # Check that the new cell positions are within the grid bounds
+        rows, cols = obj.grid_size
+        new_cell_positions = {
+            cell
+            for cell in new_cell_positions
+            if 0 <= cell[0] < rows and 0 <= cell[1] < cols
+        }
+        new_objects.append(_update_object_state(obj, PixelSet(new_cell_positions)))
+
+    return _update_arcstate_grid(state, new_objects)
+
+
+@decorate_primitive("state", tags={Require.MULTI_OBJECTS, Effect.OBJECT_COUNT})
+def connect_objects_aligned(
+    state: ArcState,
+    out_colour: int,
+) -> ArcState:
+    """
+    Connect objects that are aligned in the same row or column with a line of the specified colour
+    """
+    objects = state.objects
+    new_objects = []
+    new_objects.extend(objects)
+    for i, obj1 in enumerate(objects):
+        for j, obj2 in enumerate(objects):
+            if i >= j:
+                continue
+            # Check if objects are aligned in the same row or column (at least 4 cells in the same row or column)
+            # If so find shortest distance between them
+            rows1, cols1 = zip(*obj1.cell_positions)
+            rows2, cols2 = zip(*obj2.cell_positions)
+            if len(set(rows1).intersection(set(rows2))) >= 2:
+                # Find row that has shortest distance between the two objects
+                row_list = list(set(rows1).intersection(set(rows2)))
+                row = min(
+                    row_list,
+                    key=lambda r: min(
+                        abs(c1 - c2)
+                        for c1 in [c for r1, c in obj1.cell_positions if r1 == r]
+                        for c2 in [c for r2, c in obj2.cell_positions if r2 == r]
+                    ),
+                )
+                cols_in_obj1 = [c for r1, c in obj1.cell_positions if r1 == row]
+                cols_in_obj2 = [c for r2, c in obj2.cell_positions if r2 == row]
+                if min(cols_in_obj1) < min(cols_in_obj2):
+                    min_col = max(cols_in_obj1)
+                    max_col = min(cols_in_obj2)
+                else:
+                    min_col = max(cols_in_obj2)
+                    max_col = min(cols_in_obj1)
+                # Check if there at least 4 original object cells in the row
+                if len(cols_in_obj1) >= 2 and len(cols_in_obj2) >= 2:
+                    new_cell_positions = set()
+                    for c in range(min_col + 1, max_col):
+                        new_cell_positions.add((row, c))
+                    new_objects.append(
+                        ObjectState(
+                            label_id=obj1.label_id
+                            + obj2.label_id
+                            + np.random.randint(1, 1000),
+                            colour=out_colour,
+                            grid_size=obj1.grid_size,
+                            bounding_box=(row, min_col, row + 1, max_col + 1),
+                            centroid=(row, (min_col + max_col) // 2),
+                            area=len(new_cell_positions),
+                            cell_positions=PixelSet(new_cell_positions),
+                            priority=0,
+                        ),
+                    )
+                else:
+                    continue
+            elif len(set(cols1).intersection(set(cols2))) > 0:
+                # Find column that has shortest distance between the two objects
+                col_list = list(set(cols1).intersection(set(cols2)))
+                col = min(
+                    col_list,
+                    key=lambda c: min(
+                        abs(r1 - r2)
+                        for r1 in [r for r, c1 in obj1.cell_positions if c1 == c]
+                        for r2 in [r for r, c2 in obj2.cell_positions if c2 == c]
+                    ),
+                )
+                rows_in_obj1 = [r for r, c1 in obj1.cell_positions if c1 == col]
+                rows_in_obj2 = [r for r, c2 in obj2.cell_positions if c2 == col]
+                if min(rows_in_obj1) < min(rows_in_obj2):
+                    min_row = max(rows_in_obj1)
+                    max_row = min(rows_in_obj2)
+                else:
+                    min_row = max(rows_in_obj2)
+                    max_row = min(rows_in_obj1)
+                # Check if there at least 4 original object cells in the column
+                if len(rows_in_obj1) >= 2 and len(rows_in_obj2) >= 2:
+                    new_cell_positions = set()
+                    for r in range(min_row + 1, max_row):
+                        new_cell_positions.add((r, col))
+                    new_objects.append(
+                        ObjectState(
+                            label_id=obj1.label_id
+                            + obj2.label_id
+                            + np.random.randint(1, 1000),
+                            colour=out_colour,
+                            grid_size=obj1.grid_size,
+                            bounding_box=(min_row, col, max_row + 1, col + 1),
+                            centroid=((min_row + max_row) // 2, col),
+                            area=len(new_cell_positions),
+                            cell_positions=PixelSet(new_cell_positions),
+                            priority=0,
+                        )
+                    )
+                else:
+                    continue
+    return _update_arcstate_grid(state, new_objects)
+
+
+@decorate_primitive("state", tags={Require.MULTI_OBJECTS})
+def perfect_join_objects_to_large_object(state: ArcState, background_colour: int):
+    """
+    Look to perfectly join smaller objects to a larger object.
+    Perfect join is defined as no empty space between the two objects
+    """
+    objects = state.objects
+    grid = np.array(state.grid_state.grid)
+
+    if not objects or len(objects) < 2:
+        return state
+    largest_object = max(objects, key=lambda obj: obj.area)
+    # Check if it is a block object
+    if (
+        largest_object.is_block
+        and largest_object.width < state.grid_state.dimensions[1]
+    ):
+        return state
+
+    top_row, min_col, bottom_row, max_col = largest_object.bounding_box
+    top_r_pixels = grid[top_row, min_col:max_col]
+    empty_positions = np.where(top_r_pixels == background_colour)[0] + min_col
+
+    empty_groupings = []
+    for _, group in groupby(enumerate(empty_positions), lambda ix: ix[0] - ix[1]):
+        cols = [col for _, col in group]
+        empty_groupings.append(((top_row, cols[0]), [(top_row, col) for col in cols]))
+
+    # Sort the empty groupings by size in descending order
+    empty_groupings.sort(key=lambda x: len(x[1]), reverse=True)
+
+    other_objects = sorted(
+        [obj for obj in objects if obj != largest_object],
+        key=lambda obj: obj.area,
+        reverse=True,
+    )
+    new_objects = [largest_object]
+    used_positions = set()
+    placed_objects = set()
+
+    # From the largest other object, see if it's height or width can fill the empty space
+    for obj in other_objects:
+        if not obj.is_block:
+            continue
+
+        if obj.label_id in placed_objects:
+            continue
+
+        for idx, ((top_row, start_col), positions) in enumerate(empty_groupings):
+            if idx in used_positions:
+                continue
+
+            size = len(positions)
+            if obj.width == size:
+                new_cells = {
+                    (r - h, c) for r, c in positions for h in range(obj.height)
+                }
+
+            elif obj.height == size:
+                new_cells = {(r - w, c) for r, c in positions for w in range(obj.width)}
+            else:
+                continue
+
+            new_objects.append(_update_object_state(obj, new_cells))
+            used_positions.add(idx)
+            placed_objects.add(obj.label_id)
+            break
+
+    # Add old objects that were not joined to the new objects
+    new_objects.extend(
+        obj
+        for obj in other_objects
+        if obj.label_id not in [o.label_id for o in new_objects]
+    )
+    return _update_arcstate_grid(state, new_objects)

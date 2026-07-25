@@ -17,7 +17,14 @@ from ArcSet import ArcSet
 
 HU_TOLERANCE = 1
 # Mutation Related Parameters
-MUTATION_TYPES = ["growth", "shrink", "shape_change", "translation", "filled"]
+MUTATION_TYPES = [
+    "growth",
+    "shrink",
+    "shape_change",
+    "translation",
+    "filled",
+    "removed",
+]
 ASSOCIATION_KWARGS = [
     "direction_vector",
     "centroid_change",
@@ -52,6 +59,7 @@ class GridDifference:
     input_object_count: int
     output_object_count: int
     object_count_changed: bool
+    block_objects: bool
 
     # Colour differences
     input_colours: set[int]
@@ -101,7 +109,8 @@ class ObjectTransformation:
     direction_vector: tuple[int, int] = field(default_factory=lambda: (0, 0))
     centroid_change: tuple[float, float] = field(default_factory=lambda: (0.0, 0.0))
     new_colour_obj: Optional[int] = None
-    scale: int = 1
+    scale: int = field(default=0)
+    removed: bool = field(default=False)
 
 
 @dataclass
@@ -236,6 +245,9 @@ class HeuristicEngine:
         input_object_count = len(self.state_cache[set_id]["input"].objects)
         output_object_count = len(self.state_cache[set_id]["output"].objects)
         object_count_changed = input_object_count != output_object_count
+        block_objects = any(
+            obj.is_block for obj in self.state_cache[set_id]["input"].objects
+        ) or any(obj.is_block for obj in self.state_cache[set_id]["output"].objects)
 
         # Colour differences not including background colour
         background_colour = self.state_cache[set_id][
@@ -300,6 +312,7 @@ class HeuristicEngine:
             input_object_count=input_object_count,
             output_object_count=output_object_count,
             object_count_changed=object_count_changed,
+            block_objects=block_objects,
             # Colour differences
             input_colours=input_colours,
             output_colours=output_colours,
@@ -322,7 +335,7 @@ class HeuristicEngine:
             single_pixels=any(
                 obj.area == 1 for obj in self.state_cache[set_id]["input"].objects
             ),
-            multi_objects=input_object_count > 2
+            multi_objects=input_object_count > 2,
         )
 
     def _check_split_grid(
@@ -415,7 +428,6 @@ class HeuristicEngine:
                 set_id, i, o, input_object, output_state.objects[o]
             )
             transforms.append(transform)
-            # self._save_mutation(input_state, i, transform)
 
         for i, input_object in enumerate(input_state.objects):
             if i in visited_input_objects:
@@ -448,7 +460,24 @@ class HeuristicEngine:
                     set_id, i, best_o, input_object, output_state.objects[best_o]
                 )
                 transforms.append(transform)
-                # self._save_mutation(input_state, i, transform)
+
+        # Look for removed objects in the input that have no match in the output
+        for i, input_object in enumerate(input_state.objects):
+            if i not in visited_input_objects:
+                removal = ObjectTransformation(
+                    set_id=set_id,
+                    input_object_id=input_object.label_id,
+                    output_object_id=-1,
+                    colour_changed=False,
+                    colours=(input_object.colour, -1),
+                    position_changed=False,
+                    shape_changed=False,
+                    size_changed=False,
+                    filled=False,
+                    removed=True,
+                    mutation_types=["removed"],
+                )
+                transforms.append(removal)
 
         return transforms
 

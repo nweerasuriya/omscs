@@ -8,6 +8,7 @@ __version__ = "0.1"
 
 import inspect
 import itertools
+import numpy as np
 from typing import Callable, Iterator, Any
 from collections import Counter
 from dataclasses import dataclass
@@ -25,11 +26,10 @@ from ArcRelations import (
 )
 from helpers import ALL_DIRECTIONS, COLOUR_SET
 
+
 # -----------------------------------------------------------------------------
 # Data Classes
 # -----------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class SetSpecificKwarg:
     def resolve(self, original_state: "ArcState") -> Any:
@@ -100,8 +100,6 @@ class PropertyKwarg:
 # -----------------------------------------------------------------------------
 # Keyword Argument Engine
 # -----------------------------------------------------------------------------
-
-
 def build_kwarg_pool(
     state_cache: dict[int, dict[str, ArcState]], hs: HeuristicSummary
 ) -> dict[str, list]:
@@ -116,6 +114,9 @@ def build_kwarg_pool(
         {"horizontal", "vertical", "diagonal", "anti-diagonal"}
     )
     pool.setdefault("clockwise", set()).update({True, False})
+    pool.setdefault("corner_position", set()).update(
+        {"top-left", "top-right", "bottom-left", "bottom-right"}
+    )
     # Set default parameters that will be updated
     pool.setdefault("original_grid", set()).add(ORIGINAL_GRID_KWARG)
     pool.setdefault("background_colour", set()).add(BACKGROUND_COLOUR_KWARG)
@@ -148,21 +149,25 @@ def build_kwarg_pool(
                     tuple(gd.removed_colours)
                 )
         pool.setdefault("in_shape", set()).add(in_state.grid_state.dimensions)
-        # Get average output shape
-        avg_out_shape = tuple(
-            int(sum(dim) / len(out_shapes)) for dim in zip(*out_shapes)
-        )
-        pool.setdefault("out_shape", set()).add(avg_out_shape)
+    # Get average output shape
+    all_rows = [shape[0] for shape in out_shapes]
+    all_cols = [shape[1] for shape in out_shapes]
+    avg_out_shape = (round(np.mean(all_rows)), round(np.mean(all_cols)))
+    pool.setdefault("out_shape", set()).add(avg_out_shape)
+    pool.setdefault("max_rows", set()).add(max(all_rows))
+    pool.setdefault("max_cols", set()).add(max(all_cols))
+
     if not pool.get("out_colour"):
         pool.setdefault("out_colour", set()).update(
             OriginalColourKwarg(index=i)
             for i in range(len(out_state.grid_state.colours))
         )
     # pool.setdefault("colour_count", set()).add(OriginalColourCountKwarg())
-
     # Object related parameters
     for obj_list in hs.object_transformations:
         for od in obj_list:
+            if od.output_object_id == -1:
+                continue  # Skip removed objects for kwarg pool
             in_state: ArcState = state_cache[od.set_id]["input"]
             in_obj: ObjectState = in_state.objects[od.input_object_id]
             out_state: ArcState = state_cache[od.set_id]["output"]

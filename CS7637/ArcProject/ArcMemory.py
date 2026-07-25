@@ -82,7 +82,7 @@ class ArcState:
         # Object layer extraction using skimage regionprops
         extracted_objects = tuple()
         unique_colours = np.unique(array)
-
+        label_id_counter = 0  # To assign unique label IDs to each object
         for colour in unique_colours:
             # Skip background
             if colour == g_state.background_colour:
@@ -95,9 +95,13 @@ class ArcState:
 
             for prop in props:
                 obj_state = ObjectState.from_regionprops(
-                    prop, colour=int(colour), grid_size=grid_size
+                    prop,
+                    colour=int(colour),
+                    grid_size=grid_size,
+                    label_id=label_id_counter,
                 )
                 extracted_objects += (obj_state,)
+                label_id_counter += 1
 
         return cls(grid_state=g_state, objects=extracted_objects)
 
@@ -273,7 +277,7 @@ class ObjectState:
     mutation_vectors: tuple[tuple[float, ...], ...] = field(default_factory=tuple)
 
     # For overwriting priority in grid recreation
-    priority: int = 0
+    priority: int = 1
 
     def _replace(self, **kwargs) -> "ObjectState":
         """
@@ -313,11 +317,11 @@ class ObjectState:
 
     @property
     def height(self) -> int:
-        return self.bounding_box[2] - self.bounding_box[0] + 1
+        return self.bounding_box[2] - self.bounding_box[0]
 
     @property
     def width(self) -> int:
-        return self.bounding_box[3] - self.bounding_box[1] + 1
+        return self.bounding_box[3] - self.bounding_box[1]
 
     @property
     def size(self) -> tuple[int, int]:
@@ -380,7 +384,15 @@ class ObjectState:
         """
         mask = self.mask
         filled = ndimage.binary_fill_holes(mask)
-        return np.array_equal(mask, filled) and np.all(mask)
+        if not np.array_equal(mask, filled):
+            return False
+        rows, cols = np.where(mask)
+        if len(rows) == 0 or len(cols) == 0:
+            return False
+
+        bbox = self.bounding_box
+        expected_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+        return np.count_nonzero(mask) == expected_area
 
     @property
     def pointed_direction(self) -> tuple[int, int]:
@@ -409,7 +421,7 @@ class ObjectState:
     @property
     def has_line(self) -> bool:
         """
-        Check if the object has a line (horizontal, vertical) that is at least 50% of the object's height or width.
+        Check if the object has a line (horizontal, vertical) that is at least 50% of the object's height or width and > 4 pixels
         """
         rows = [int(r) for r, _ in self.cell_positions]
         cols = [int(c) for _, c in self.cell_positions]
@@ -419,16 +431,15 @@ class ObjectState:
         max_row_line = max(row_count.values(), default=0)
         max_col_line = max(col_count.values(), default=0)
 
-        return (
-            max_row_line >= 0.5 * self.height or max_col_line >= 0.5 * self.width
+        return (max_row_line >= 0.5 * self.height and max_row_line > 4) or (
+            max_col_line >= 0.5 * self.width and max_col_line > 4
         )
-
-
 
     @classmethod
     def from_regionprops(
         cls,
         prop,
+        label_id: int,
         grid_size: tuple[int, int],
         colour: int,
     ) -> "ObjectState":
@@ -444,7 +455,7 @@ class ObjectState:
         centroid = prop.centroid
 
         return cls(
-            label_id=prop.label,
+            label_id=label_id,
             colour=colour,
             bounding_box=bbox,
             centroid=(centroid[0], centroid[1]),
