@@ -266,8 +266,9 @@ def build_clan_table(mean_rd_treated, X_full, T_arr,
     treated_mask = T_arr.astype(bool)
     X_treated    = X_full[treated_mask].reset_index(drop=True)
  
-    threshold = np.percentile(mean_rd_treated, top_pct * 100)
-    hb_mask   = mean_rd_treated <= threshold   # most negative RD = highest benefit
+    upper_threshold = np.percentile(mean_rd_treated, top_pct * 100)
+    lower_threshold = np.percentile(mean_rd_treated, (top_pct-0.1) * 100)
+    hb_mask = (mean_rd_treated >= lower_threshold) & (mean_rd_treated <= upper_threshold)
  
     X_hb   = X_treated[hb_mask]
     X_rest = X_treated[~hb_mask]
