@@ -29,7 +29,6 @@ class MonsterClassificationAgent:
             "has-tail": set([True, False])
         }
         self.specific_model = {}
-        self.combination_keys = ["leg-count", "arm-count", "eye-count", "horn-count"]
 
 
 
@@ -45,7 +44,7 @@ class MonsterClassificationAgent:
         #
         #Your function should return True or False as a guess as to whether or not this new
         #monster is an instance of the same species as that represented by the list.
-        combinations = set()
+
         for monster, is_positive in samples:
             if is_positive:
                 for key, value in monster.items():
@@ -53,15 +52,12 @@ class MonsterClassificationAgent:
                         self.specific_model[key] = set()
                     self.specific_model[key].add(value)
 
-                # Track combinations of specific keys
-                combination = tuple(monster[key] for key in self.combination_keys if key in monster)
-                combinations.add(combination)
+        # Look for essential features in specific model that define the species
+        # Keys that have less than 2 unique values in the positive samples are considered essential and appear more than once in the positive samples.
+        
 
         for key, value in new_monster.items():
             if key in self.specific_model and value not in self.specific_model[key]:
                 return False
 
-        new_combination = tuple(new_monster[key] for key in self.combination_keys if key in new_monster)
-        if new_combination not in combinations:
-            return False
         return True
